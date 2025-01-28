@@ -1,30 +1,440 @@
 ---
-title: "analysis"
-author: "Aaron Philipp"
+title: "Sample cluster"
+# author: "Aaron Philipp"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+
+```{r load data, include=FALSE}
+load(file = "~/tubework/projects/sample-cluster/r-sample-cluster/data/channel_data_2024-10-29.RData")
+
+load(file = "~/tubework/projects/sample-cluster/r-sample-cluster/data/channel_data_full_2024-11-18.RData")
+
+channel_data_full <- channel_data_full %>%
+  rename("channel_topic" = "channel_topic_new")
+
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r load packages, include=FALSE}
+library(tidyverse)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+`%!in%` = Negate(`%in%`)
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r theme set, include=FALSE}
+theme_set(theme_minimal())
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## plots
+
+
+```{r channel, echo=FALSE}
+
+channel_data_full %>%
+  group_by(channel_topic) %>%
+  summarise(
+    mean = mean(subscriber_count, na.rm = TRUE)
+  ) %>%
+  ggplot(
+    aes(
+      x = channel_topic,
+      y = mean
+    )
+  ) +
+  geom_col() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+
+ggsave(
+  filename = "~/tubework/projects/sample-cluster/r-sample-cluster/graphics/channel_topic-cpm-earnings-sample.png",
+  plot = last_plot(),
+  width = 12,
+  height = 8,
+  dpi = 600
+)
+```
+
+```{r boxplots-combined-channel-topic, echo=FALSE}
+topics <- unique(data$channel_topic)
+
+df_boxplots <- data.frame(
+  "topic" = topics,
+  "lower" = NA,
+  "q1" = NA,
+  "median" = NA,
+  "q3" = NA,
+  "upper" = NA
+)
+
+df_boxplots <- df_boxplots %>%
+  left_join(
+    data %>% select(channel_topic, cpm_new) %>% distinct(),
+    by = c("topic" = "channel_topic")
+  )
+
+tmp <- data
+
+for (i in topics) {
+  tmp_int <- tmp %>%
+    filter(channel_topic == i)
+  
+  lower_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .25) - 1.50*IQR(tmp_int$inc_monthly))
+  upper_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .75) + 1.50*IQR(tmp_int$inc_monthly))
+  
+  df_boxplots[df_boxplots[,"topic"] == i,"q1"] <- as.numeric(quantile(tmp_int$inc_monthly, .25))
+  df_boxplots[df_boxplots[,"topic"] == i,"median"] <- median(tmp_int$inc_monthly)
+  df_boxplots[df_boxplots[,"topic"] == i,"q3"] <- as.numeric(quantile(tmp_int$inc_monthly, .75))
+  
+  tmp_int2 <- tmp_int %>%
+    select(inc_monthly) %>%
+    mutate(
+      low = inc_monthly - lower_whisker,
+      high = inc_monthly - upper_whisker
+      )
+  
+  df_boxplots[df_boxplots[,"topic"] == i,"lower"] <- tmp_int2[tmp_int2$low == min(tmp_int2$low),]$inc_monthly
+
+  tmp_int2 <- tmp_int2 %>%
+    filter(high < 0)
+  
+  df_boxplots[df_boxplots[,"topic"] == i,"upper"] <- tmp_int2[tmp_int2$low == max(tmp_int2$low),]$inc_monthly
+  
+}
+
+df_boxplots_full <- data.frame(
+  "topic" = topics,
+  "lower" = NA,
+  "q1" = NA,
+  "median" = NA,
+  "q3" = NA,
+  "upper" = NA
+)
+
+df_boxplots_full <- df_boxplots_full %>%
+  left_join(
+    data %>% select(channel_topic, cpm_new) %>% distinct(),
+    by = c("topic" = "channel_topic")
+  )
+
+tmp <- data_full
+
+for (i in topics) {
+  tmp_int <- tmp %>%
+    filter(channel_topic == i)
+  
+  lower_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .25) - 1.50*IQR(tmp_int$inc_monthly))
+  upper_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .75) + 1.50*IQR(tmp_int$inc_monthly))
+  
+  df_boxplots_full[df_boxplots_full[,"topic"] == i,"q1"] <- as.numeric(quantile(tmp_int$inc_monthly, .25))
+  df_boxplots_full[df_boxplots_full[,"topic"] == i,"median"] <- median(tmp_int$inc_monthly)
+  df_boxplots_full[df_boxplots_full[,"topic"] == i,"q3"] <- as.numeric(quantile(tmp_int$inc_monthly, .75))
+  
+  tmp_int2 <- tmp_int %>%
+    select(inc_monthly) %>%
+    mutate(
+      low = inc_monthly - lower_whisker,
+      high = inc_monthly - upper_whisker
+      )
+  
+  df_boxplots_full[df_boxplots_full[,"topic"] == i,"lower"] <- tmp_int2[tmp_int2$low == min(tmp_int2$low),]$inc_monthly
+
+  tmp_int2 <- tmp_int2 %>%
+    filter(high < 0)
+  
+  df_boxplots_full[df_boxplots_full[,"topic"] == i,"upper"] <- tmp_int2[tmp_int2$low == max(tmp_int2$low),]$inc_monthly
+  
+}
+
+
+(plot_full <- ggplot() +
+  geom_jitter(
+    data = data_full,
+    aes(
+      x = reorder(channel_topic, cpm_new),
+      y = inc_monthly
+    ),
+    height = 0,
+    width = .3,
+    col = "steelblue",
+    alpha = .6
+  ) +
+  geom_boxplot(
+    stat = "identity",
+    data = df_boxplots_full,
+    aes(
+      x = reorder(topic, cpm_new),
+      ymin = lower,
+      lower = q1,
+      middle = median,
+      upper = q3,
+      ymax = upper
+      ),
+    alpha = .7,
+    width = .5,
+    outliers = FALSE
+    ) +
+  scale_y_log10(
+    breaks = c(.01,.1,1,10,100,1000,10000,100000,1000000),
+    minor_breaks = c(0.05,.5,5,50,500,5000,50000,500000),
+    labels = c("0.01","0.10","1","10","100","1,000","10,000","100,000","1,000,000")
+  ) +
+  annotation_logticks(
+    base = 10,
+    sides = "l",
+    short = unit(0,"mm"),
+    mid = unit(1,"mm"),
+    long = unit(3,"mm")
+  ) +
+  labs(
+    x = "channel topic",
+    y = "Average monthly earnings from YPP in $",
+    col = "topic-specific\nCPM in $"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", colour = NA),
+    # axis.text.x = element_text(size = 12, colour = "black", angle = 45, hjust = 1),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(size = 16, colour = "black"),
+    # axis.title.x = element_text(size = 12),
+    axis.title.x = element_blank(),
+    # axis.title.y = element_text(size = 12),
+    axis.title.y = element_blank(),
+    axis.ticks.y.left = element_line(colour = "black"),
+    # legend.title = element_text(size = 12),
+    panel.border = element_rect(fill = NA, colour = "black"),
+    panel.grid.minor.x = element_blank()
+  ))
+
+(plot_data <- ggplot() +
+  geom_jitter(
+    data = data,
+    aes(
+      x = reorder(channel_topic, cpm_new),
+      y = inc_monthly
+    ),
+    height = 0,
+    width = .3,
+    alpha = .6,
+    col = "red1"
+  ) +
+  geom_boxplot(
+    stat = "identity",
+    data = df_boxplots,
+    aes(
+      x = reorder(topic, cpm_new),
+      ymin = lower,
+      lower = q1,
+      middle = median,
+      upper = q3,
+      ymax = upper
+      ),
+    alpha = .7,
+    width = .5,
+    outliers = FALSE
+    ) +
+  scale_y_log10(
+    breaks = c(.01,.1,1,10,100,1000,10000,100000,1000000),
+    minor_breaks = c(0.05,.5,5,50,500,5000,50000,500000),
+    labels = c("0.01","0.10","1","10","100","1,000","10,000","100,000","1,000,000")
+  ) +
+  annotation_logticks(
+    base = 10,
+    sides = "l",
+    short = unit(0,"mm"),
+    mid = unit(1,"mm"),
+    long = unit(3,"mm")
+  ) +
+  labs(
+    x = "",
+    y = "Average monthly earnings from YPP in $",
+    col = "topic-specific\nCPM in $"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", colour = NA),
+    axis.text.x = element_text(size = 16, colour = "black", angle = 45, hjust = 1),
+    # axis.text.x = element_blank(),
+    axis.text.y = element_text(size = 16, colour = "black"),
+    # axis.title.x = element_text(size = 12),
+    # axis.title.x = element_blank(),
+    # axis.title.y = element_text(size = 12),
+    axis.title.y = element_blank(),
+    axis.ticks.y.left = element_line(colour = "black"),
+    # legend.title = element_text(size = 12),
+    panel.border = element_rect(fill = NA, colour = "black"),
+    panel.grid.minor.x = element_blank()
+  ))
+
+
+
+(plot <- ggarrange(
+  plot_full, plot_data,
+  ncol = 1,
+  nrow = 2,
+  heights = c(1,1.4),
+  common.legend = TRUE
+)
+)
+
+(plot <- annotate_figure(
+  plot,
+  left = text_grob("Average monthly earnings from YPP in $", size = 16, rot = 90)))
+
+ggsave(
+  filename = "~/tubework/projects/earning-inequality/r-income/graphics/figure-4.jpeg",
+  plot = last_plot(),
+  width = 9,
+  height = 9,
+  dpi = 300
+)
+```
+
+
+## Cluster Analysis
+
+```{r}
+### CLUSTER ANALSIS ###################
+
+# tmp <- data_filter %>%
+#   select(
+#     sex,
+#     age,
+#     education,
+#     race,
+#     visibility,
+#     channel_age,
+#     subscriber_count,
+#     # membership,
+#     # shop,
+#     video_count,
+#     channel_type,
+#     channel_topic,
+#     inc_sources,
+#     # view_count,
+#     # comment_count,
+#     # comment_prop_mean,
+#     # like_prop_mean,
+#     income_monthly
+#     ) %>%
+#   # mutate(
+#   #   shop = case_match(
+#   #     shop,
+#   #     1 ~ "Ja",
+#   #     0 ~"Nein"
+#   #   ),
+#   #   membership = case_match(
+#   #     membership,
+#   #     1 ~ "Ja",
+#   #     0 ~"Nein"
+#   #   )
+#   # ) %>%
+#   na.omit() %>%
+#   filter(
+#     subscriber_count < 8000000
+#   )
+# 
+# cluster <- Factoshiny(tmp)
+# 
+# res.PCA<-PCA(tmp,ncp=2,quali.sup=c(1,2,3,4,5,9,10),graph=FALSE)
+# res.HCPC<-HCPC(res.PCA,nb.clust=4,consol=FALSE,graph=FALSE)
+# 
+# # plot.HCPC(res.HCPC,choice='tree',title='Hierarchical tree')
+# # plot.HCPC(res.HCPC,choice='map',draw.tree=FALSE,title='Factor map')
+# # plot.HCPC(res.HCPC,choice='3D.map',ind.names=FALSE,centers.plot=FALSE,angle=60,title='Hierarchical tree on the factor map')
+# 
+# 
+# df_individuals <- res.HCPC[["data.clust"]]
+# 
+# # res.HCPC$call$t$inert.gain
+# # sum(res.HCPC$call$t$inert.gain)
+# 
+# # res.HCPC$call$t$inert.gain[1]/sum(res.HCPC$call$t$inert.gain)
+# # res.HCPC$call$t$inert.gain[2]/sum(res.HCPC$call$t$inert.gain)
+# # res.HCPC$call$t$inert.gain[3]/sum(res.HCPC$call$t$inert.gain)
+# # res.HCPC$call$t$inert.gain[4]/sum(res.HCPC$call$t$inert.gain)
+# # res.HCPC$call$t$inert.gain[5]/sum(res.HCPC$call$t$inert.gain)
+# 
+# 
+# cluster_table <- read_csv("exports/HCPCshiny_income.csv")
+# cluster_table <- cluster_table %>%
+#   rename("Zusammensetzung" = "...1")
+# 
+# write.xlsx(cluster_table, "exports/cluster_Tabelle_income.xlsx")
+# 
+# df_individuals %>%
+#   group_by(clust) %>%
+#   mutate(
+#     clust = case_match(clust,
+#                        "1" ~ paste("Hope Labour (N =",sum(df_individuals$clust == "1"), ")",sep = ""),
+#                        "2" ~ paste("Earning diversification 1 (N =",sum(df_individuals$clust == "2"), ")",sep = ""),
+#                        "3" ~ paste("Earning diversification 2 (N =",sum(df_individuals$clust == "3"), ")",sep = ""),
+#                        "4" ~ paste("Top Earners (N =",sum(df_individuals$clust == "4"), ")",sep = "")
+#     )
+#   ) %>%
+#   mutate(clust = factor(clust,
+#                         levels = c(
+#                           paste("Hope Labour (N =",sum(df_individuals$clust == "1"), ")",sep = ""),
+#                           paste("Earning diversification 1 (N =",sum(df_individuals$clust == "2"), ")",sep = ""),
+#                           paste("Earning diversification 2 (N =",sum(df_individuals$clust == "3"), ")",sep = ""),
+#                           paste("Top Earners (N =",sum(df_individuals$clust == "4"), ")",sep = "")
+#                         ),
+#                         ordered = TRUE)
+#          ) %>%
+#   ggplot() +
+#   geom_point(
+#     aes(
+#       x = income_monthly,
+#       y = channel_age/12 ,
+#       # shape = education,
+#       col =  subscriber_count,
+#       size = inc_sources
+#     ),
+#     alpha = 0.6
+#   ) +
+#   # geom_vline(
+#   #   xintercept = 0,
+#   #   linetype = "dashed"
+#   # ) +
+#   scale_x_log10(
+#     breaks = c(0.1,1,10,100,1000,10000),
+#     labels = c("0.1","1","10","100","1K","10K")
+#   ) +
+#   scale_colour_gradient(trans = "log",
+#                         breaks = c(100,2500,50000,1000000),
+#                         labels = c("100","2500","50K","1mio")
+#                         ) +
+#   labs(
+#     x = "monthly income from YT Partner Program in $",
+#     y = "Channel age in years",
+#     col = "Subscribers",
+#     size = "Alternative Earnings",
+#     # shape = "Education",
+#     subtitle = paste("N = ", nrow(df_individuals), sep = "")
+#   ) +
+#   facet_wrap(~ clust,
+#              # scales = "free"
+#              ) +
+#   theme(text = element_text(size = 20),
+#         legend.position = "bottom",
+#         # legend.title = element_blank(),
+#         legend.direction = "vertical",
+#         legend.title.align = 0.5)
+# 
+# ggsave(filename = "graphics/income/cluster_analysis_income2.png",
+#        plot = last_plot(),
+#        width = 14,
+#        height = 9,
+#        dpi = 300)
+
+```
+
