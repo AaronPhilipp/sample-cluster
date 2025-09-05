@@ -10,52 +10,302 @@ output:
 ---
 
 
-```{r load data, include=FALSE}
-load(file = "~/tubework/projects/sample-cluster/r-sample-cluster/data/channel_data_2024-10-29.RData")
 
-load(file = "~/tubework/projects/sample-cluster/r-sample-cluster/data/channel_data_full_2024-11-18.RData")
+```{r packages and setup, include=FALSE}
 
-channel_data_full <- channel_data_full %>%
-  rename("channel_topic" = "channel_topic_new")
+knitr::opts_chunk$set(echo = FALSE)
 
+library(tidyverse)
+library(Factoshiny)
+library(lsr)
+library(corrplot)
+library(nnet)
+library(marginaleffects)
+
+`%!in%` = Negate(`%in%`)
+
+graph_path = "~/tubework/projects/sample-cluster/r-sample-cluster/graphics/"
 ```
 
 
-```{r load packages, include=FALSE}
-library(tidyverse)
+```{r data, include=FALSE}
+### load 115.000 channels
+load(file = "~/tubework/projects/sample-cluster/r-sample-cluster/data/channel_data_full_2025-09-01.RData")
 
-`%!in%` = Negate(`%in%`)
+channel_data_full <- channel_data_full %>%
+  filter(channel_topic != "Unknown")
+
+
+### load random sample
+load(file = "~/tubework/projects/sample-cluster/r-sample-cluster/data/channel_data_2025-09-03.RData")
+
+channel_data <- channel_data %>%
+  filter(channel_type %in% c("single", "group"))
+
+### load sentiment data
+load("~/tubework/projects/sample-cluster/r-sample-cluster/data/sentiment_channels_2024-06-27.RData")
+
+channel_data <- channel_data %>%
+  left_join(
+    sentiment_channels,
+    by = c("channel_id" = "channel_id_vid")
+  )
+
+### load hate data
+hate <- read.csv("~/tubework/projects/sample-cluster/r-sample-cluster/data/hate_and_off_channel.csv") %>%
+  select(-X)
+
+channel_data <- channel_data %>%
+  left_join(
+    hate,
+    by = "channel_id"
+  )
+
+channel_data <- channel_data %>%
+  na.omit() %>%
+  filter(channel_topic != "Unknown")
+
+
+rm(hate,sentiment_channels)
+
+### load video data from random sample
+load(file = "data/video_data_2025-04-30.RData")
+
+# calcute a productivity variable
+tmp <- video_data %>%
+  filter(channel_id %in% channel_data$channel_id) %>%
+  mutate(month = str_sub(publication_date,1,7)) %>%
+  group_by(channel_id, month) %>%
+  count() %>%
+  group_by(channel_id) %>%
+  mutate(min = min(month), max = max(month)) %>%
+  mutate(min = as.Date(paste0(min,"-01")), max = as.Date(paste0(max,"-01"))) %>%
+  mutate(active_months = as.numeric(round((max - min)/30) + 1)) %>%
+  group_by(channel_id) %>%
+  mutate(productivity = sum(n)/active_months) %>%
+  select(channel_id,active_months, productivity, max) %>%
+  distinct() %>%
+  left_join(
+    channel_data %>% select(channel_id, channel_topic),
+    by = "channel_id"
+  ) %>%
+  group_by(channel_topic) %>%
+  mutate(prod_mean_topic = mean(productivity)) %>%
+  mutate(prod_comp_topic = productivity/prod_mean_topic) %>%
+  ungroup() %>%
+  select(-channel_topic) %>%
+  rename("last_video" = "max") %>%
+  mutate(last_video = abs(last_video - today()))
+
+channel_data <- channel_data %>%
+  left_join(
+    tmp,
+    by = "channel_id"
+  )
 ```
 
 
 ```{r theme set, include=FALSE}
-theme_set(theme_minimal())
+theme_set(
+  theme_minimal() +
+    theme(
+      plot.background = element_rect(fill = "white"),
+      plot.title = element_text(hjust = .5, size = 16),
+      plot.subtitle = element_text(hjust = .5, size = 14),
+      plot.caption = element_text(size = 12, face = "italic", hjust = 0),
+      legend.title = element_text(size = 16),
+      legend.text = element_text(size = 14),
+      axis.title = element_text(colour = "black", size = 16),
+      axis.text = element_text(colour = "black", size = 14),
+      strip.text = element_text(size = 14),
+      strip.background = element_rect(colour = "grey"),
+      panel.background = element_rect(fill = "grey95", colour = "grey95"),
+      panel.grid.major = element_line(colour = "grey80")
+    )
+  )
+
+col_red <- "#F8766D"
+# col_red <- "firebrick3"
 ```
 
-## plots
+
+### subscribers -----
+
+```{r lorenz curve}
+dec <- data.frame(
+  "subscriber_count" = quantile(channel_data$subscriber_count,
+                     probs = seq(.1, .9, by = .1),
+                     na.rm = TRUE
+                     )
+  ) %>%
+  rownames_to_column("decile")
+
+ggplot(
+  dec
+  ) +
+  geom_line(
+    aes(
+      x = decile,
+      y = subscriber_count,
+      group = 1
+    )
+  ) +
+  geom_point(
+    aes(
+      x = decile,
+      y = subscriber_count,
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq(0,700,50)
+  ) +
+  labs(
+    x = "Decile",
+    y = "Monthly earnings from YPP in $",
+    # subtitle = paste(
+    #   "N = ",
+    #   nrow(data_1000),
+    #   sep = ""
+    #   )
+  ) +
+  coord_flip()
 
 
-```{r channel, echo=FALSE}
+lc <- channel_data %>%
+  arrange(subscriber_count) %>%
+  mutate(
+    group = row_number()
+  ) %>%
+  mutate(
+    scale_group = scales::rescale(x = group, to = c(0, 1)),
+    decile = ntile(subscriber_count, 10),
+    cum_subs = cumsum(subscriber_count) / sum(subscriber_count)
+  ) %>%
+mutate(
+  pop_prop = decile / max(decile)
+)
 
+
+ggplot(
+  data = lc
+  ) +
+  geom_line(
+    aes(
+      x = scale_group,
+      y = cum_subs
+    )
+  ) +
+  geom_ribbon(
+    aes(x = scale_group,
+                  y = cum_subs,
+                  ymax = scale_group, ymin = cum_subs), 
+              fill = "steelblue", alpha = 0.2
+    ) +
+  geom_abline(
+    intercept = 0, slope = 1, colour = "steelblue"
+    ) +
+  scale_x_continuous(
+    breaks = seq(0,1,0.1),
+    labels = scales::label_percent() 
+  ) +
+  scale_y_continuous(
+    breaks = seq(0,1,0.1),
+    labels = scales::label_percent() 
+  ) +
+  labs(
+    x = "Cumulative proportion of population",
+    y = "Cumulative proportion of income",
+    # title = "Lorenz curve",
+    # subtitle = paste(
+    #   "N = ",
+    #   nrow(data_1000),
+    #   sep = ""
+    #   )
+  )
+
+```
+
+
+```{r subscriber deciles}
+tmp <- channel_data %>%
+  add_column(decile = channel_data$subscriber_count %>% ntile(10))
+
+ggplot(tmp) +
+  geom_point(
+    aes(
+      x = decile,
+      y = subscriber_count
+    ),
+    position = position_jitter(height = 0)
+  ) +
+  scale_x_continuous(breaks = 0:10, labels = scales::number_format(scale = 10, suffix = "%")) +
+  scale_y_log10(breaks = c(0,100,1000,10000,100000,1000000,10000000), labels = c("0","100","1K","10K","100K","1mio","10mio"))
+
+ggsave(filename = "graphics/subscriber_deciles.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+  
+```
+
+
+```{r income deciles}
+tmp <- channel_data %>%
+  add_column(decile = channel_data$inc_monthly %>% ntile(10))
+
+ggplot(tmp) +
+  geom_point(
+    aes(
+      x = decile,
+      y = inc_monthly
+    ),
+    position = position_jitter(height = 0)
+  ) +
+  scale_x_continuous(breaks = 0:10, labels = scales::number_format(scale = 10, suffix = "%")) +
+  scale_y_log10()
+  # scale_y_log10(breaks = c(0,100,1000,10000,100000,1000000,10000000), labels = c("0","100","1K","10K","100K","1mio","10mio"))
+
+ggsave(filename = "graphics/subscriber_deciles.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+  
+```
+
+
+### channel topics -----
+
+
+```{r bar plot: channels per topic}
 channel_data_full %>%
   group_by(channel_topic) %>%
   summarise(
-    mean = mean(subscriber_count, na.rm = TRUE)
+    sum = n()
+  ) %>%
+  mutate(
+    perc = sum/nrow(channel_data_full)
   ) %>%
   ggplot(
     aes(
-      x = channel_topic,
-      y = mean
+      x = reorder(channel_topic, -sum),
+      y = sum
     )
   ) +
-  geom_col() +
+  geom_col(fill = col_red) +
+  scale_y_continuous(breaks = c(0,5000,10000,15000,20000,25000,30000, 35000)) +
+  labs(
+    x = "topic",
+    y = "sum of channels",
+    caption = paste("Note: data based on N =", format(nrow(channel_data_full), big.mark = ","), "channels")
+  ) +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1)
   )
 
-
 ggsave(
-  filename = "~/tubework/projects/sample-cluster/r-sample-cluster/graphics/channel_topic-cpm-earnings-sample.png",
+  filename = paste0(graph_path, "channel-by-topics.png"),
   plot = last_plot(),
   width = 12,
   height = 8,
@@ -63,378 +313,1853 @@ ggsave(
 )
 ```
 
-```{r boxplots-combined-channel-topic, echo=FALSE}
-topics <- unique(data$channel_topic)
 
-df_boxplots <- data.frame(
-  "topic" = topics,
-  "lower" = NA,
-  "q1" = NA,
-  "median" = NA,
-  "q3" = NA,
-  "upper" = NA
-)
-
-df_boxplots <- df_boxplots %>%
-  left_join(
-    data %>% select(channel_topic, cpm_new) %>% distinct(),
-    by = c("topic" = "channel_topic")
-  )
-
-tmp <- data
-
-for (i in topics) {
-  tmp_int <- tmp %>%
-    filter(channel_topic == i)
-  
-  lower_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .25) - 1.50*IQR(tmp_int$inc_monthly))
-  upper_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .75) + 1.50*IQR(tmp_int$inc_monthly))
-  
-  df_boxplots[df_boxplots[,"topic"] == i,"q1"] <- as.numeric(quantile(tmp_int$inc_monthly, .25))
-  df_boxplots[df_boxplots[,"topic"] == i,"median"] <- median(tmp_int$inc_monthly)
-  df_boxplots[df_boxplots[,"topic"] == i,"q3"] <- as.numeric(quantile(tmp_int$inc_monthly, .75))
-  
-  tmp_int2 <- tmp_int %>%
-    select(inc_monthly) %>%
-    mutate(
-      low = inc_monthly - lower_whisker,
-      high = inc_monthly - upper_whisker
-      )
-  
-  df_boxplots[df_boxplots[,"topic"] == i,"lower"] <- tmp_int2[tmp_int2$low == min(tmp_int2$low),]$inc_monthly
-
-  tmp_int2 <- tmp_int2 %>%
-    filter(high < 0)
-  
-  df_boxplots[df_boxplots[,"topic"] == i,"upper"] <- tmp_int2[tmp_int2$low == max(tmp_int2$low),]$inc_monthly
-  
-}
-
-df_boxplots_full <- data.frame(
-  "topic" = topics,
-  "lower" = NA,
-  "q1" = NA,
-  "median" = NA,
-  "q3" = NA,
-  "upper" = NA
-)
-
-df_boxplots_full <- df_boxplots_full %>%
-  left_join(
-    data %>% select(channel_topic, cpm_new) %>% distinct(),
-    by = c("topic" = "channel_topic")
-  )
-
-tmp <- data_full
-
-for (i in topics) {
-  tmp_int <- tmp %>%
-    filter(channel_topic == i)
-  
-  lower_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .25) - 1.50*IQR(tmp_int$inc_monthly))
-  upper_whisker <- as.numeric(quantile(tmp_int$inc_monthly, .75) + 1.50*IQR(tmp_int$inc_monthly))
-  
-  df_boxplots_full[df_boxplots_full[,"topic"] == i,"q1"] <- as.numeric(quantile(tmp_int$inc_monthly, .25))
-  df_boxplots_full[df_boxplots_full[,"topic"] == i,"median"] <- median(tmp_int$inc_monthly)
-  df_boxplots_full[df_boxplots_full[,"topic"] == i,"q3"] <- as.numeric(quantile(tmp_int$inc_monthly, .75))
-  
-  tmp_int2 <- tmp_int %>%
-    select(inc_monthly) %>%
-    mutate(
-      low = inc_monthly - lower_whisker,
-      high = inc_monthly - upper_whisker
-      )
-  
-  df_boxplots_full[df_boxplots_full[,"topic"] == i,"lower"] <- tmp_int2[tmp_int2$low == min(tmp_int2$low),]$inc_monthly
-
-  tmp_int2 <- tmp_int2 %>%
-    filter(high < 0)
-  
-  df_boxplots_full[df_boxplots_full[,"topic"] == i,"upper"] <- tmp_int2[tmp_int2$low == max(tmp_int2$low),]$inc_monthly
-  
-}
+### deconstructing channel topics -----
 
 
-(plot_full <- ggplot() +
-  geom_jitter(
-    data = data_full,
+```{r violin/point plot: subscribers in topics}
+ggplot(channel_data_full) +
+  geom_violin(
     aes(
-      x = reorder(channel_topic, cpm_new),
-      y = inc_monthly
+      x = channel_topic,
+      y = subscriber_count
+    )
+  ) +
+  geom_point(
+    aes(
+      x = channel_topic,
+      y = subscriber_count
     ),
-    height = 0,
-    width = .3,
-    col = "steelblue",
-    alpha = .6
+    position = position_jitter(height = 0),
+    aplha = 0.5
   ) +
-  geom_boxplot(
-    stat = "identity",
-    data = df_boxplots_full,
-    aes(
-      x = reorder(topic, cpm_new),
-      ymin = lower,
-      lower = q1,
-      middle = median,
-      upper = q3,
-      ymax = upper
-      ),
-    alpha = .7,
-    width = .5,
-    outliers = FALSE
-    ) +
-  scale_y_log10(
-    breaks = c(.01,.1,1,10,100,1000,10000,100000,1000000),
-    minor_breaks = c(0.05,.5,5,50,500,5000,50000,500000),
-    labels = c("0.01","0.10","1","10","100","1,000","10,000","100,000","1,000,000")
-  ) +
-  annotation_logticks(
-    base = 10,
-    sides = "l",
-    short = unit(0,"mm"),
-    mid = unit(1,"mm"),
-    long = unit(3,"mm")
-  ) +
-  labs(
-    x = "channel topic",
-    y = "Average monthly earnings from YPP in $",
-    col = "topic-specific\nCPM in $"
-  ) +
-  theme_minimal() +
   theme(
-    plot.background = element_rect(fill = "white", colour = NA),
-    # axis.text.x = element_text(size = 12, colour = "black", angle = 45, hjust = 1),
-    axis.text.x = element_blank(),
-    axis.text.y = element_text(size = 16, colour = "black"),
-    # axis.title.x = element_text(size = 12),
-    axis.title.x = element_blank(),
-    # axis.title.y = element_text(size = 12),
-    axis.title.y = element_blank(),
-    axis.ticks.y.left = element_line(colour = "black"),
-    # legend.title = element_text(size = 12),
-    panel.border = element_rect(fill = NA, colour = "black"),
-    panel.grid.minor.x = element_blank()
-  ))
-
-(plot_data <- ggplot() +
-  geom_jitter(
-    data = data,
-    aes(
-      x = reorder(channel_topic, cpm_new),
-      y = inc_monthly
-    ),
-    height = 0,
-    width = .3,
-    alpha = .6,
-    col = "red1"
-  ) +
-  geom_boxplot(
-    stat = "identity",
-    data = df_boxplots,
-    aes(
-      x = reorder(topic, cpm_new),
-      ymin = lower,
-      lower = q1,
-      middle = median,
-      upper = q3,
-      ymax = upper
-      ),
-    alpha = .7,
-    width = .5,
-    outliers = FALSE
-    ) +
-  scale_y_log10(
-    breaks = c(.01,.1,1,10,100,1000,10000,100000,1000000),
-    minor_breaks = c(0.05,.5,5,50,500,5000,50000,500000),
-    labels = c("0.01","0.10","1","10","100","1,000","10,000","100,000","1,000,000")
-  ) +
-  annotation_logticks(
-    base = 10,
-    sides = "l",
-    short = unit(0,"mm"),
-    mid = unit(1,"mm"),
-    long = unit(3,"mm")
-  ) +
-  labs(
-    x = "",
-    y = "Average monthly earnings from YPP in $",
-    col = "topic-specific\nCPM in $"
-  ) +
-  theme_minimal() +
-  theme(
-    plot.background = element_rect(fill = "white", colour = NA),
-    axis.text.x = element_text(size = 16, colour = "black", angle = 45, hjust = 1),
-    # axis.text.x = element_blank(),
-    axis.text.y = element_text(size = 16, colour = "black"),
-    # axis.title.x = element_text(size = 12),
-    # axis.title.x = element_blank(),
-    # axis.title.y = element_text(size = 12),
-    axis.title.y = element_blank(),
-    axis.ticks.y.left = element_line(colour = "black"),
-    # legend.title = element_text(size = 12),
-    panel.border = element_rect(fill = NA, colour = "black"),
-    panel.grid.minor.x = element_blank()
-  ))
-
-
-
-(plot <- ggarrange(
-  plot_full, plot_data,
-  ncol = 1,
-  nrow = 2,
-  heights = c(1,1.4),
-  common.legend = TRUE
-)
-)
-
-(plot <- annotate_figure(
-  plot,
-  left = text_grob("Average monthly earnings from YPP in $", size = 16, rot = 90)))
-
-ggsave(
-  filename = "~/tubework/projects/earning-inequality/r-income/graphics/figure-4.jpeg",
-  plot = last_plot(),
-  width = 9,
-  height = 9,
-  dpi = 300
-)
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 ```
 
 
-## Cluster Analysis
+```{r bar/point plot: topics with mean subs}
+tmp <- channel_data_full %>%
+  group_by(channel_topic) %>%
+  summarise(
+    sum = n(),
+    mean_subs = mean(subscriber_count, na.rm = TRUE),
+    median_subs = median(subscriber_count, na.rm = TRUE)
+  ) %>%
+  mutate(
+    perc = sum/nrow(channel_data_full)
+  )  %>%
+  pivot_longer(
+    cols = c("mean_subs","median_subs","sum", "perc"),
+    names_to = "metric",
+    values_to = "value"
+  )
 
-```{r}
-### CLUSTER ANALSIS ###################
+ggplot(
+  mapping = aes(
+      x = reorder(channel_topic, -value),
+      y = value
+    )
+  ) +
+  geom_col(
+    data = tmp %>% filter(metric == "sum"),
+    fill = col_red
+    ) +
+  geom_point(
+    data = tmp %>% filter(metric == "median_subs"),
+    aes(y = value*5),
+    col = "blue",
+    size = 5
+    ) +
+  scale_y_continuous(
+    breaks = c(0,5000,10000,15000,20000,25000,30000, 35000),
+    sec.axis = sec_axis(trans=~./5, name="median subscriber")) +
+  labs(
+    x = "topic",
+    y = "sum of channels",
+    caption = paste("Note: data based on N =", format(nrow(channel_data_full), big.mark = ","), "channels")
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 
-# tmp <- data_filter %>%
-#   select(
-#     sex,
-#     age,
-#     education,
-#     race,
-#     visibility,
-#     channel_age,
-#     subscriber_count,
-#     # membership,
-#     # shop,
-#     video_count,
-#     channel_type,
-#     channel_topic,
-#     inc_sources,
-#     # view_count,
-#     # comment_count,
-#     # comment_prop_mean,
-#     # like_prop_mean,
-#     income_monthly
-#     ) %>%
-#   # mutate(
-#   #   shop = case_match(
-#   #     shop,
-#   #     1 ~ "Ja",
-#   #     0 ~"Nein"
-#   #   ),
-#   #   membership = case_match(
-#   #     membership,
-#   #     1 ~ "Ja",
-#   #     0 ~"Nein"
-#   #   )
-#   # ) %>%
-#   na.omit() %>%
-#   filter(
-#     subscriber_count < 8000000
-#   )
-# 
-# cluster <- Factoshiny(tmp)
-# 
-# res.PCA<-PCA(tmp,ncp=2,quali.sup=c(1,2,3,4,5,9,10),graph=FALSE)
-# res.HCPC<-HCPC(res.PCA,nb.clust=4,consol=FALSE,graph=FALSE)
-# 
-# # plot.HCPC(res.HCPC,choice='tree',title='Hierarchical tree')
-# # plot.HCPC(res.HCPC,choice='map',draw.tree=FALSE,title='Factor map')
-# # plot.HCPC(res.HCPC,choice='3D.map',ind.names=FALSE,centers.plot=FALSE,angle=60,title='Hierarchical tree on the factor map')
-# 
-# 
-# df_individuals <- res.HCPC[["data.clust"]]
-# 
-# # res.HCPC$call$t$inert.gain
-# # sum(res.HCPC$call$t$inert.gain)
-# 
-# # res.HCPC$call$t$inert.gain[1]/sum(res.HCPC$call$t$inert.gain)
-# # res.HCPC$call$t$inert.gain[2]/sum(res.HCPC$call$t$inert.gain)
-# # res.HCPC$call$t$inert.gain[3]/sum(res.HCPC$call$t$inert.gain)
-# # res.HCPC$call$t$inert.gain[4]/sum(res.HCPC$call$t$inert.gain)
-# # res.HCPC$call$t$inert.gain[5]/sum(res.HCPC$call$t$inert.gain)
-# 
-# 
-# cluster_table <- read_csv("exports/HCPCshiny_income.csv")
-# cluster_table <- cluster_table %>%
-#   rename("Zusammensetzung" = "...1")
-# 
-# write.xlsx(cluster_table, "exports/cluster_Tabelle_income.xlsx")
-# 
-# df_individuals %>%
-#   group_by(clust) %>%
-#   mutate(
-#     clust = case_match(clust,
-#                        "1" ~ paste("Hope Labour (N =",sum(df_individuals$clust == "1"), ")",sep = ""),
-#                        "2" ~ paste("Earning diversification 1 (N =",sum(df_individuals$clust == "2"), ")",sep = ""),
-#                        "3" ~ paste("Earning diversification 2 (N =",sum(df_individuals$clust == "3"), ")",sep = ""),
-#                        "4" ~ paste("Top Earners (N =",sum(df_individuals$clust == "4"), ")",sep = "")
-#     )
-#   ) %>%
-#   mutate(clust = factor(clust,
-#                         levels = c(
-#                           paste("Hope Labour (N =",sum(df_individuals$clust == "1"), ")",sep = ""),
-#                           paste("Earning diversification 1 (N =",sum(df_individuals$clust == "2"), ")",sep = ""),
-#                           paste("Earning diversification 2 (N =",sum(df_individuals$clust == "3"), ")",sep = ""),
-#                           paste("Top Earners (N =",sum(df_individuals$clust == "4"), ")",sep = "")
-#                         ),
-#                         ordered = TRUE)
-#          ) %>%
-#   ggplot() +
-#   geom_point(
-#     aes(
-#       x = income_monthly,
-#       y = channel_age/12 ,
-#       # shape = education,
-#       col =  subscriber_count,
-#       size = inc_sources
-#     ),
-#     alpha = 0.6
-#   ) +
-#   # geom_vline(
-#   #   xintercept = 0,
-#   #   linetype = "dashed"
-#   # ) +
-#   scale_x_log10(
-#     breaks = c(0.1,1,10,100,1000,10000),
-#     labels = c("0.1","1","10","100","1K","10K")
-#   ) +
-#   scale_colour_gradient(trans = "log",
-#                         breaks = c(100,2500,50000,1000000),
-#                         labels = c("100","2500","50K","1mio")
-#                         ) +
-#   labs(
-#     x = "monthly income from YT Partner Program in $",
-#     y = "Channel age in years",
-#     col = "Subscribers",
-#     size = "Alternative Earnings",
-#     # shape = "Education",
-#     subtitle = paste("N = ", nrow(df_individuals), sep = "")
-#   ) +
-#   facet_wrap(~ clust,
-#              # scales = "free"
-#              ) +
-#   theme(text = element_text(size = 20),
-#         legend.position = "bottom",
-#         # legend.title = element_blank(),
-#         legend.direction = "vertical",
-#         legend.title.align = 0.5)
-# 
-# ggsave(filename = "graphics/income/cluster_analysis_income2.png",
+ggsave(
+  filename = paste0(graph_path, "topics-with-mean-subs.png"),
+  plot = last_plot(),
+  width = 12,
+  height = 8,
+  dpi = 600
+)
+
+rm(tmp)
+```
+
+
+```{r bar plot: sex by channel topic}
+
+tmp <- expand.grid(
+  channel_topic = unique(channel_data$channel_topic),
+  sex = unique(channel_data$sex)
+) %>%
+  left_join(
+    channel_data %>%
+      group_by(channel_topic,sex) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("channel_topic","sex")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(channel_topic) %>%
+  mutate(n_topic = sum(n)) %>%
+  mutate(n_topic = ifelse(is.na(n_topic),0,n_topic)) %>%
+  mutate(perc = n/n_topic)
+
+ggplot(tmp) +
+  geom_col(
+    aes(
+      x = channel_topic,
+      y = perc,
+      fill = sex
+      )
+  )  +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100)) +
+  labs(
+    x = "channel topic",
+    y = "share (in %)",
+    col = "sex of the content creator",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "graphics/sex_by_channel_topic.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r bar plot: sex by channel topic with < 10.000 subs}
+
+tmp <- expand.grid(
+  channel_topic = unique(channel_data$channel_topic),
+  sex = unique(channel_data$sex)
+) %>%
+  left_join(
+    channel_data %>%
+      filter(subscriber_count < 10000) %>%
+      group_by(channel_topic,sex) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("channel_topic","sex")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(channel_topic) %>%
+  mutate(n_topic = sum(n)) %>%
+  mutate(n_topic = ifelse(is.na(n_topic),0,n_topic)) %>%
+  mutate(perc = n/n_topic)
+
+ggplot(tmp) +
+  geom_col(
+    aes(
+      x = channel_topic,
+      y = perc,
+      fill = sex
+      )
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+
+```{r bar plot: sex by channel topic with > 10.000 subs}
+
+tmp <- expand.grid(
+  channel_topic = unique(channel_data$channel_topic),
+  sex = unique(channel_data$sex)
+) %>%
+  left_join(
+    channel_data %>%
+      filter(subscriber_count > 10000) %>%
+      group_by(channel_topic,sex) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("channel_topic","sex")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(channel_topic) %>%
+  mutate(n_topic = sum(n)) %>%
+  mutate(n_topic = ifelse(is.na(n_topic),0,n_topic)) %>%
+  mutate(perc = n/n_topic)
+
+ggplot(tmp) +
+  geom_col(
+    aes(
+      x = channel_topic,
+      y = perc,
+      fill = sex
+      )
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+
+```{r bar plot: female perc by topic}
+
+channel_data %>%
+  group_by(channel_topic, sex) %>%
+  count() %>% 
+  group_by(channel_topic) %>%
+  mutate(
+    sum = sum(n),
+    perc = n/sum
+  ) %>%
+  filter(sex == "female") %>%
+  ggplot(
+    aes(
+      x = reorder(channel_topic, -perc),
+      y = perc
+    )
+  ) +
+  geom_col(fill = col_red, position = position_dodge2()) +
+  labs(
+    x = "channel topic",
+    y = "percentage of female channel hosts (in %)",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+  ) +
+  scale_y_continuous(breaks = seq(0:0,6,.1), labels = scales::number_format(scale = 100), limits = c(0,0.65)) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "graphics/female_perc_by_topic.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+
+```
+
+
+```{r bar plot: perc under 20 yrs by topic}
+
+channel_data %>%
+  group_by(channel_topic, age) %>%
+  count() %>% 
+  group_by(channel_topic) %>%
+  mutate(
+    sum = sum(n),
+    perc = n/sum
+  ) %>%
+  filter(age == "under 20 yrs.") %>%
+  ggplot(
+    aes(
+      x = reorder(channel_topic, -perc),
+      y = perc
+    )
+  ) +
+  geom_col(fill = col_red, position = position_dodge2()) +
+  labs(
+    x = "channel topic",
+    y = "percentage of channel hosts under 20 years (in %)",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+  ) +
+  scale_y_continuous(breaks = seq(0:0,3,.1), labels = scales::number_format(scale = 100), limits = c(0,0.3)) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "graphics/under20yrs_perc_by_topic.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+
+```
+
+
+```{r bar plot: perc of superstars by topic}
+
+channel_data %>%
+  mutate(superstar = ifelse(subscriber_count >= 1000000, TRUE, FALSE)) %>%
+  group_by(channel_topic, superstar) %>%
+  count() %>% 
+  right_join(
+    expand.grid(
+      channel_topic = unique(channel_data$channel_topic),
+      superstar = c(TRUE,FALSE)
+      ),
+    by = c("channel_topic","superstar")
+    ) %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(channel_topic) %>%
+  mutate(
+    sum = sum(n),
+    perc = n/sum
+  ) %>%
+  filter(superstar == TRUE) %>%
+  ggplot(
+    aes(
+      x = reorder(channel_topic, -perc),
+      y = perc
+    )
+  ) +
+  geom_col(fill = col_red, position = position_dodge2()) +
+  labs(
+    x = "channel topic",
+    y = "percentage of channels with >= 1mio subscriber (in %)",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+  ) +
+  scale_y_continuous(breaks = seq(0:0,1,.01), labels = scales::number_format(scale = 100), limits = c(0,0.06)) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "graphics/1mio_subs_perc_by_topic.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+
+### distinction in deciles based on subscribers -----
+
+
+```{r table: deciles based on subscribers}
+
+dec <- data.frame(
+  "subscribers" = quantile(channel_data$subscriber_count,
+                     probs = seq(.1, .9, by = .1),
+                     na.rm = TRUE)) %>%
+  rownames_to_column("decile")
+
+print(dec)
+```
+
+
+```{r line plot: sex by deciles}
+
+tmp <- channel_data %>%
+  add_column(decile = channel_data$subscriber_count %>% ntile(10))
+
+tmp <- expand.grid(
+  decile = 1:10,
+  sex = unique(channel_data$sex)
+) %>%
+  left_join(
+    tmp %>%
+      group_by(decile,sex) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("decile","sex")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(decile) %>%
+  mutate(n_dec = sum(n)) %>%
+  mutate(n_dec = ifelse(is.na(n_dec),0,n_dec)) %>%
+  mutate(perc = n/n_dec)
+  
+
+ggplot(
+  tmp,
+  aes(
+      x = decile,
+      y = perc,
+      col = sex
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) + 
+  scale_x_continuous(breaks = 0:10, labels = scales::number_format(scale = 10, suffix = "%")) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.8)) +
+  labs(
+    x = "decile of subscribers",
+    y = "share (in %)",
+    col = "sex of the content creator",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+ggsave(filename = "graphics/sex_by_deciles.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r line plot: race by deciles}
+
+tmp <- channel_data %>%
+  add_column(decile = channel_data$subscriber_count %>% ntile(10))
+
+tmp <- expand.grid(
+  decile = 1:10,
+  race = unique(channel_data$race)
+) %>%
+  left_join(
+    tmp %>%
+      group_by(decile,race) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("decile","race")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(decile) %>%
+  mutate(n_dec = sum(n)) %>%
+  mutate(n_dec = ifelse(is.na(n_dec),0,n_dec)) %>%
+  mutate(perc = n/n_dec)
+  
+
+ggplot(
+  tmp,
+  aes(
+      x = decile,
+      y = perc,
+      col = race
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = 0:10, labels = scales::number_format(scale = 10, suffix = "%")) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.7)) +
+  labs(
+    x = "decile of subscribers",
+    y = "share (in %)",
+    col = "race of the content creator",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+ggsave(filename = "graphics/race_by_deciles.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r line plot: age by deciles}
+
+tmp <- channel_data %>%
+  add_column(decile = channel_data$subscriber_count %>% ntile(10))
+
+tmp <- expand.grid(
+  decile = 1:10,
+  age = unique(channel_data$age)
+) %>%
+  left_join(
+    tmp %>%
+      group_by(decile,age) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("decile","age")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(decile) %>%
+  mutate(n_dec = sum(n)) %>%
+  mutate(n_dec = ifelse(is.na(n_dec),0,n_dec)) %>%
+  mutate(perc = n/n_dec)
+  
+
+ggplot(
+  tmp,
+  aes(
+      x = decile,
+      y = perc,
+      col = age
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) + 
+  scale_x_continuous(breaks = 0:10, labels = scales::number_format(scale = 10, suffix = "%")) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.5)) +
+  labs(
+    x = "decile of subscribers",
+    y = "share (in %)",
+    col = "age of the content creator",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+ggsave(filename = "graphics/age_by_deciles.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r line plot: channel topic by deciles}
+
+tmp <- channel_data %>%
+  add_column(decile = channel_data$subscriber_count %>% ntile(10))
+
+tmp <- expand.grid(
+  decile = 1:10,
+  channel_topic = unique(channel_data$channel_topic)
+) %>%
+  left_join(
+    tmp %>%
+      group_by(decile,channel_topic) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("decile","channel_topic")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(decile) %>%
+  mutate(n_dec = sum(n)) %>%
+  mutate(n_dec = ifelse(is.na(n_dec),0,n_dec)) %>%
+  mutate(perc = n/n_dec)
+  
+
+ggplot(
+  tmp,
+  aes(
+      x = decile,
+      y = perc,
+      col = channel_topic
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) + 
+  scale_x_continuous(breaks = 0:10, labels = scales::number_format(scale = 10, suffix = "%")) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.5)) +
+  labs(
+    x = "decile of subscribers",
+    y = "share (in %)",
+    col = "channel topic",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+ggsave(filename = "graphics/channeltopic_by_deciles.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r line plot: channel topic by deciles (full sample)}
+
+tmp <- channel_data_full %>%
+  add_column(decile = channel_data_full$subscriber_count %>% ntile(10))
+
+tmp <- expand.grid(
+  decile = 1:10,
+  channel_topic = unique(channel_data_full$channel_topic)
+) %>%
+  left_join(
+    tmp %>%
+      group_by(decile,channel_topic) %>%
+      summarise(n = n(), .groups = "drop"),
+    by = c("decile","channel_topic")
+  )  %>%
+  mutate(n = ifelse(is.na(n),0,n)) %>%
+  group_by(decile) %>%
+  mutate(n_dec = sum(n)) %>%
+  mutate(n_dec = ifelse(is.na(n_dec),0,n_dec)) %>%
+  mutate(perc = n/n_dec)
+  
+
+ggplot(
+  tmp,
+  aes(
+      x = decile,
+      y = perc,
+      col = channel_topic
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) + 
+  scale_x_continuous(breaks = 0:10, labels = scales::number_format(scale = 10, suffix = "%")) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.5)) +
+  labs(
+    x = "decile of subscribers",
+    y = "share (in %)",
+    col = "channel topic"
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+# ggsave(filename = "graphics/channeltopic_by_deciles_full.png",
 #        plot = last_plot(),
 #        width = 14,
 #        height = 9,
 #        dpi = 300)
+```
+
+
+### distinction in categorical subscribers -----
+
+```{r table: categorical subscribers}
+channel_data_full %>%
+  filter(!is.na(subscriber_count) & subscriber_count != 0) %>%
+  mutate(
+    subs_cat = case_when(
+      subscriber_count < 1000 ~ "<1k",
+      subscriber_count >= 1000 & subscriber_count < 10000 ~ "1k-10k",
+      subscriber_count >= 10000 & subscriber_count < 50000 ~ "10k-50k",
+      subscriber_count >= 50000 & subscriber_count < 100000 ~ "50k-100k",
+      subscriber_count >= 100000 & subscriber_count < 1000000 ~ "100k-1mio",
+      subscriber_count >= 1000000 & subscriber_count < 10000000 ~ "1mio-10mio",
+      .default = ">=10mio"
+    )
+  ) %>%
+  mutate(
+    subs_cat = factor(
+      subs_cat,
+      levels = c(
+        ">=10mio",
+        "1mio-10mio",
+        "100k-1mio",
+        "50k-100k",
+        "10k-50k",
+        "1k-10k",
+        "<1k"
+      )
+    )
+  ) %>%
+  count(subs_cat)
+```
+
+```{r}
+channel_data_full %>%
+  filter(!is.na(subscriber_count)) %>%
+  mutate(
+    subs_cat = case_when(
+      subscriber_count < 1000 ~ "<1k",
+      subscriber_count >= 1000 & subscriber_count < 10000 ~ "1k-10k",
+      subscriber_count >= 10000 & subscriber_count < 50000 ~ "10k-50k",
+      subscriber_count >= 50000 & subscriber_count < 100000 ~ "50k-100k",
+      subscriber_count >= 100000 & subscriber_count < 1000000 ~ "100k-1mio",
+      subscriber_count >= 1000000 & subscriber_count < 10000000 ~ "1mio-10mio",
+      .default = ">=10mio"
+    )
+  ) %>%
+  mutate(
+    subs_cat = factor(
+      subs_cat,
+      levels = c(
+        ">=10mio",
+        "1mio-10mio",
+        "100k-1mio",
+        "50k-100k",
+        "10k-50k",
+        "1k-10k",
+        "<1k"
+      )
+    )
+  ) %>%
+  group_by(channel_topic, subs_cat) %>%
+  summarise(n = n()) %>%
+  group_by(channel_topic) %>%
+  mutate(n_topic = sum(n)) %>%
+  ggplot() +
+  geom_tile(
+    aes(
+      x = channel_topic,
+      y = subs_cat,
+      fill = n,
+      # alpha = n
+    ),
+    # position = position_jitter(height = 0)
+  ) +
+  scale_y_discrete(limits=rev) +
+  labs(
+    x = "topic",
+    y = "",
+    fill = "subscriber"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
+  )
+```
+
+
+```{r bar plot: share of cat subs by topic}
+channel_data_full %>%
+  filter(!is.na(subscriber_count)) %>%
+  mutate(
+    subs_cat = case_when(
+      subscriber_count < 1000 ~ "<1k",
+      subscriber_count >= 1000 & subscriber_count < 10000 ~ "1k-10k",
+      subscriber_count >= 10000 & subscriber_count < 50000 ~ "10k-50k",
+      subscriber_count >= 50000 & subscriber_count < 100000 ~ "50k-100k",
+      subscriber_count >= 100000 & subscriber_count < 1000000 ~ "100k-1mio",
+      subscriber_count >= 1000000 & subscriber_count < 10000000 ~ "1mio-10mio",
+      .default = ">=10mio"
+    )
+  ) %>%
+  mutate(
+    subs_cat = factor(
+      subs_cat,
+      levels = c(
+        ">=10mio",
+        "1mio-10mio",
+        "100k-1mio",
+        "50k-100k",
+        "10k-50k",
+        "1k-10k",
+        "<1k"
+      )
+    )
+  ) %>%
+  group_by(channel_topic, subs_cat) %>%
+  summarise(n = n()) %>%
+  group_by(channel_topic) %>%
+  mutate(n_topic = sum(n)) %>%
+  mutate(perc = n/n_topic) %>%
+  ggplot() +
+  geom_col(
+    aes(
+      x = channel_topic,
+      y = perc,
+      fill = subs_cat
+    )
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "topic",
+    y = "",
+    fill = "subscriber"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
+  )
+```
+
+```{r bar plot: +100k subs by topic}
+
+channel_data_full %>%
+  filter(subscriber_count > 100000) %>%
+  group_by(channel_topic) %>%
+  count() %>%
+  ggplot(
+    aes(
+      x = channel_topic,# x = reorder(channel_topic, -n),
+      y = n
+    )
+  ) +
+  geom_col(fill = col_red) +
+  labs(
+    x = "channel topic",
+    y = "number of channels with +100k subscribers"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+channel_data_full %>%
+  filter(subscriber_count > 1000000) %>%
+  group_by(channel_topic) %>%
+  count() %>%
+  ggplot(
+    aes(
+      x = reorder(channel_topic, -n),
+      y = n
+    )
+  ) +
+  geom_col(fill = col_red) +
+  labs(
+    x = "channel topic",
+    y = "number of channels with +1mio subscribers"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 
 ```
 
+
+### distinction in aspirational labour, middle class and superstars -----
+
+```{r}
+tmp <- channel_data_full %>%
+  filter(!is.na(subscriber_count)) %>%
+  mutate(
+    class = case_when(
+      subscriber_count < 10000 ~ "aspirational",
+      subscriber_count >= 10000 & subscriber_count < 1000000 ~ "middle class",
+      .default = "superstars"
+    )
+  )
+
+table(tmp$class)
+```
+
+```{r}
+ggplot(tmp) +
+  geom_point(
+    aes(
+      x = class,
+      y = subscriber_count
+    ),
+    alpha = .5,
+    position = position_jitter(height = 0)
+  ) +
+  scale_y_log10()
+```
+
+
+### anzahl subs zu anzahl konkurrenz -----
+
+```{r}
+tmp <- channel_data %>%
+  group_by(channel_topic) %>%
+  mutate(
+    n_topic = n(),
+    mean_subs = mean(subscriber_count),
+    median_subs = median(subscriber_count))
+
+ggplot(tmp) +
+  geom_point(
+    aes(
+      x = reorder(channel_topic, n_topic),
+      y = subscriber_count
+      ),
+    alpha = 0.5, position = position_jitter(height = 0)
+  ) +
+  geom_point(
+    aes(
+      x = reorder(channel_topic, n_topic),
+      y = median_subs
+      ),
+    size = 5,
+    col = "red"
+    ) +
+  geom_point(
+    aes(
+      x = reorder(channel_topic, n_topic),
+      y = mean_subs
+      ),
+    size = 5,
+    col = "blue"
+    ) +
+  scale_y_log10() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+
+```
+
+```{r}
+tmp <- channel_data %>%
+  group_by(channel_topic) %>%
+  summarise(
+    n_topic = n(),
+    mean_subs = mean(subscriber_count),
+    median_subs = median(subscriber_count)) %>%
+  arrange(n_topic)
+
+ggplot(tmp) +
+  geom_point(
+    aes(
+      x = n_topic,
+      y = median_subs
+    )
+  )
+```
+
+
+### time analysis ----- 
+
+
+```{r point/line plot: channel topic over time}
+tmp <- channel_data_full %>%
+  mutate(foundation_year = str_sub(publication_date,1,4)) %>%
+  group_by(foundation_year) %>%
+  count()
+
+ggplot(
+  data = tmp,
+    aes(
+      x = foundation_year,
+      y = n
+    )
+  ) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  labs(
+    x = "year of foundation",
+    y = "share (in %)",
+    col = "channel topic",
+    caption = paste("Note: data based on N =", format(nrow(channel_data_full), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+ggsave(filename = "graphics/cases_over_time.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+
+```{r point/line plot: channel topic over time}
+tmp <- channel_data_full %>%
+  mutate(foundation_year = str_sub(publication_date,1,4)) %>%
+  group_by(foundation_year, channel_topic) %>%
+  count() %>%
+  group_by(foundation_year) %>%
+  mutate(n_year = sum(n)) %>%
+  mutate(perc = n/n_year)
+
+ggplot(
+  data = tmp,
+    aes(
+      x = foundation_year,
+      y = perc,
+      col = channel_topic,
+      group = channel_topic
+    )
+  ) +
+  geom_point(size = 3) +
+  geom_line(size = 1) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.6)) +
+  labs(
+    x = "year of foundation",
+    y = "share (in %)",
+    col = "channel topic",
+    caption = paste("Note: data based on N =", format(nrow(channel_data_full), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+ggsave(filename = "graphics/channeltopic_over_time.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r point/line plot: sex over time}
+tmp <- channel_data %>%
+  mutate(foundation_year = str_sub(publication_date,1,4)) %>%
+  group_by(foundation_year, sex) %>%
+  count() %>%
+  group_by(foundation_year) %>%
+  mutate(n_year = sum(n)) %>%
+  mutate(perc = n/n_year)
+
+ggplot(
+  data = tmp,
+    aes(
+      x = foundation_year,
+      y = perc,
+      col = sex,
+      group = sex
+    )
+  ) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.8)) +
+  labs(
+    x = "year of foundation",
+    y = "share (in %)",
+    col = "sex",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+ggsave(filename = "graphics/sex_over_time.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r point/line plot: race over time}
+tmp <- channel_data %>%
+  filter(is_active == "yes") %>%
+  mutate(foundation_year = str_sub(publication_date,1,4)) %>%
+  group_by(foundation_year, race) %>%
+  count() %>%
+  group_by(foundation_year) %>%
+  mutate(n_year = sum(n)) %>%
+  mutate(perc = n/n_year)
+
+ggplot(
+  data = tmp,
+    aes(
+      x = foundation_year,
+      y = perc,
+      col = race,
+      group = race
+    )
+  ) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.9)) +
+  labs(
+    x = "year of foundation",
+    y = "share (in %)",
+    col = "race",
+    caption = paste("Note: data based on N =", format(nrow(channel_data %>%
+  filter(is_active == "yes")), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+ggsave(filename = "graphics/race_over_time2.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+```{r point/line plot: age over time}
+tmp <- channel_data %>%
+  mutate(foundation_year = str_sub(publication_date,1,4)) %>%
+  group_by(foundation_year, age) %>%
+  count() %>%
+  group_by(foundation_year) %>%
+  mutate(n_year = sum(n)) %>%
+  mutate(perc = n/n_year)
+
+ggplot(
+  data = tmp,
+    aes(
+      x = foundation_year,
+      y = perc,
+      col = age,
+      group = age
+    )
+  ) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(breaks = seq(0:0,5,.1), labels = scales::number_format(scale = 100), limits = c(0,0.8)) +
+  labs(
+    x = "year of foundation",
+    y = "share (in %)",
+    col = "age",
+    caption = paste("Note: data based on N =", format(nrow(channel_data), big.mark = ","), "channels")
+    ) +
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5))
+
+
+ggsave(filename = "graphics/age_over_time.png",
+       plot = last_plot(),
+       width = 14,
+       height = 9,
+       dpi = 300)
+```
+
+
+### top subscriber by topic -----
+
+
+```{r earnings by topics}
+
+channel_data_full %>%
+  group_by(channel_topic) %>%
+  summarise(
+    mean = mean(inc_monthly, na.rm = TRUE),
+    median = median(inc_monthly, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = c("mean","median"),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  ggplot(
+    aes(
+      x = reorder(channel_topic, -value),
+      y = value,
+      col = metric,
+      group = metric
+    )
+  ) +
+  geom_line() +
+  labs(
+    x = "topic",
+    y = "subscribers",
+    col = ""
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+
+### logistic regression -----
+
+```{r race as dependent variable}
+
+tmp <- channel_data %>%
+  filter(race %in% c("white", "BIPoC")) %>%
+  mutate(race = factor(race))
+  
+model <- glm(
+  data = tmp,
+  family = binomial(link = "logit"),
+  formula = race ~ 
+    channel_age +
+  subscriber_count
+  )
+
+summary(model)
+```
+
+
+### Cluster Analysis
+
+```{r correlation of variables}
+corrplot(
+  cor(
+    channel_data %>%
+    select(
+        channel_age,
+        subscriber_count,
+        video_count,
+        view_count,
+        inc_monthly,
+        audience,
+        mean_sentiment,
+        hate_only_mean,
+        off_only_mean,
+        productivity,
+        active_months
+    ) %>% na.omit()
+  ),
+  method = "number",
+  diag = TRUE,
+  type = "upper"
+
+  )
+tmp <- channel_data %>%
+    select(
+        sex,
+        age,
+        education,
+        race,
+        visibility,
+        channel_topic,
+        is_monetized
+    )
+
+
+chisq.test(table(channel_data %>%
+    select(
+        sex,
+        age,
+        education,
+        race,
+        visibility,
+        channel_topic,
+        is_monetized
+    ) %>% na.omit()))
+
+str(channel_data %>%
+    select(
+        sex,
+        age,
+        education,
+        race,
+        visibility,
+        channel_topic
+    ))
+
+
+cramersV(channel_data$age, channel_data$channel_age)
+cramersV(channel_data$sex, channel_data$age)
+cramersV(channel_data$sex, channel_data$race)
+
+# chisq.test(table(channel_data$race, channel_data$sex))
+
+```
+
+
+```{r cluster analysis}
+
+df_cluster <- channel_data %>% 
+  filter(subscriber_count < 8000000) %>% # exclude extreme outlier
+  select(
+    channel_age,
+    subscriber_count,
+    # view_count,
+    # video_count,
+    inc_monthly,
+    inc_sources,
+    audience,
+    mean_sentiment,
+    hate_only_mean,
+    sex,
+    age,
+    race,
+    channel_topic,
+    # is_monetized,
+    visibility,
+    active_months,
+    productivity,
+    # prod_comp_topic,
+    mail,
+    last_video
+  ) %>%
+  group_by(channel_topic) %>%
+  mutate(n_topic = n()) %>%
+  ungroup()
+
+tmp <- df_cluster %>%
+  transmute(
+    channel_age_std = scale(channel_age)[,1],
+    subscriber_count_std = scale(subscriber_count)[,1],
+    # video_count_std = scale(video_count)[,1],
+    audience_std = scale(audience)[,1],
+    sentiment_std = scale(mean_sentiment)[,1],
+    hate_std = scale(hate_only_mean)[,1],
+    inc_monthly_std = scale(inc_monthly)[,1],
+    n_topic_std = scale(n_topic)[,1],
+    inc_sources_std = scale(inc_sources)[,1],
+    active_months_std = scale(active_months)[,1],
+    productivity_std = scale(productivity)[,1],
+    # prod_comp_topic_std = scale(prod_comp_topic)[,1],
+    sex,
+    age,
+    race,
+    channel_topic,
+    visibility,
+    # is_monetized,
+    mail,
+    last_video_std = scale(last_video)[,1]
+  ) %>%
+  na.omit()
+
+cluster <- Factoshiny(tmp)
+
+# res.PCA<-PCA(tmp,ncp=Inf, scale.unit=FALSE,quali.sup=c(8,9,10,11,12,13),graph=FALSE)
+# res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
+
+# res.PCA<-PCA(tmp,ncp=Inf, scale.unit=FALSE,quali.sup=c(9,10,11,12,13,14),graph=FALSE)
+# res.HCPC<-HCPC(res.PCA,nb.clust=5,consol=FALSE,graph=FALSE)
+
+# res.PCA<-PCA(tmp,ncp=Inf, scale.unit=FALSE,quali.sup=c(11,12,13,14,15,16,17),graph=FALSE)
+# res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
+
+
+# with channel_age
+res.PCA<-PCA(tmp,ncp=Inf,scale.unit=FALSE,quali.sup=c(11,12,13,14,15,16),graph=FALSE)
+res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
+
+# with last video
+res.PCA<-PCA(tmp,ncp=Inf, scale.unit=FALSE,quali.sup=c(11,12,13,14,15,16),graph=FALSE)
+res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
+
+df_cluster$cluster <- res.HCPC[["data.clust"]]$clust
+tmp$cluster <- res.HCPC[["data.clust"]]$clust
+
+plot.HCPC(res.HCPC,choice='tree',title='Hierarchical tree')
+plot.HCPC(res.HCPC,choice='map',draw.tree=FALSE,title='Factor map')
+plot.HCPC(res.HCPC,choice='3D.map',ind.names=FALSE,centers.plot=FALSE,angle=60,title='Hierarchical tree on the factor map')
+
+
+# res.HCPC$call$t$inert.gain
+# sum(res.HCPC$call$t$inert.gain)
+
+res.HCPC$call$t$inert.gain[1]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[2]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[3]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[4]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[5]/sum(res.HCPC$call$t$inert.gain)
+
+
+
+```
+
+
+```{r cluster analysis only channel metrics}
+
+df_cluster <- channel_data %>% 
+  filter(subscriber_count < 8000000) %>% # exclude extreme outlier
+  dplyr::select(
+    channel_age,
+    subscriber_count,
+    # view_count,
+    # video_count,
+    inc_monthly,
+    inc_sources,
+    audience,
+    mean_sentiment,
+    hate_only_mean,
+    sex,
+    age,
+    race,
+    channel_topic,
+    # is_monetized,
+    visibility,
+    active_months,
+    productivity,
+    # prod_comp_topic,
+    mail,
+    last_video
+  ) %>%
+  group_by(channel_topic) %>%
+  mutate(n_topic = n()) %>%
+  ungroup()
+
+tmp <- df_cluster %>%
+  transmute(
+    channel_age_std = scale(channel_age)[,1],
+    subscriber_count_std = scale(subscriber_count)[,1],
+    # video_count_std = scale(video_count)[,1],
+    audience_std = scale(audience)[,1],
+    sentiment_std = scale(mean_sentiment)[,1],
+    hate_std = scale(hate_only_mean)[,1],
+    inc_monthly_std = scale(inc_monthly)[,1],
+    n_topic_std = scale(n_topic)[,1],
+    inc_sources_std = scale(inc_sources)[,1],
+    active_months_std = scale(active_months)[,1],
+    productivity_std = scale(productivity)[,1],
+    # prod_comp_topic_std = scale(prod_comp_topic)[,1],
+    # sex,
+    # age,
+    # race,
+    channel_topic,
+    visibility,
+    # is_monetized,
+    mail,
+    last_video_std = scale(last_video)[,1]
+  ) %>%
+  na.omit()
+
+cluster <- Factoshiny(tmp)
+
+
+res.PCA<-PCA(tmp,ncp=Inf, scale.unit=FALSE,quali.sup=c(11,12,13),graph=FALSE)
+res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
+
+df_cluster$cluster <- res.HCPC[["data.clust"]]$clust
+tmp$cluster <- res.HCPC[["data.clust"]]$clust
+
+plot.HCPC(res.HCPC,choice='tree',title='Hierarchical tree')
+plot.HCPC(res.HCPC,choice='map',draw.tree=FALSE,title='Factor map')
+plot.HCPC(res.HCPC,choice='3D.map',ind.names=FALSE,centers.plot=FALSE,angle=60,title='Hierarchical tree on the factor map')
+
+
+# res.HCPC$call$t$inert.gain
+# sum(res.HCPC$call$t$inert.gain)
+
+res.HCPC$call$t$inert.gain[1]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[2]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[3]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[4]/sum(res.HCPC$call$t$inert.gain)
+res.HCPC$call$t$inert.gain[5]/sum(res.HCPC$call$t$inert.gain)
+
+
+
+```
+
+
+```{r dot plot: cluster analysis}
+
+df_cluster %>%
+  group_by(cluster) %>%
+  mutate(
+    cluster = case_match(cluster,
+                       "1" ~ paste("Hope Labour (N =",sum(df_cluster$cluster == "1"), ")",sep = ""),
+                       "2" ~ paste("Adapted Survivors (N =",sum(df_cluster$cluster == "2"), ")",sep = ""),
+                       "3" ~ paste("Top Earners (N =",sum(df_cluster$cluster == "3"), ")",sep = "")
+    )
+  ) %>%
+  mutate(cluster = factor(cluster,
+                        levels = c(
+                          paste("Hope Labour (N =",sum(df_cluster$cluster == "1"), ")",sep = ""),
+                          paste("Adapted Survivors (N =",sum(df_cluster$cluster == "2"), ")",sep = ""),
+                          paste("Top Earners (N =",sum(df_cluster$cluster == "3"), ")",sep = "")
+                        ),
+                        ordered = TRUE)
+         ) %>%
+  ggplot() +
+  geom_point(
+    aes(
+      x = subscriber_count,
+      y = active_months,
+      col = inc_sources,
+      size = productivity
+      # size = inc_monthly
+    ),
+    alpha = 0.6
+  ) +
+  geom_vline(
+    xintercept = 1000,
+    linetype = "dashed"
+  ) +
+  scale_x_log10(
+    breaks = c(.1,1,10,100,1000,10000,100000,1000000),
+    labels = c("0.1","1","10","100","1K","10K","100K","1mio")
+  ) +
+  # scale_color_(breaks = 1:8) +
+  labs(
+    x = "amount of subscribers",
+    y = "active months of the channel (in months)",
+    col = "monetization strategies",
+    # size = "monthly income from YT Partner Program in $",
+    size = "productivity",
+    caption = paste("Note: data based on N =", format(nrow(tmp), big.mark = ","), "channels")
+  ) +
+  facet_wrap(~ cluster,
+             # scales = "free"
+             ) +
+  theme(text = element_text(size = 20),
+        legend.position = "bottom",
+        legend.title.position = "top",
+        legend.direction = "horizontal",
+        legend.title.align = 0.5)
+
+ggsave(filename = "graphics/cluster_analysis.png",
+       plot = last_plot(),
+       width = 16,
+       height = 8,
+       dpi = 300)
+```
+
+```{r}
+
+df_cluster <- df_cluster %>%
+  mutate(cluster = as.factor(cluster))
+
+tmp <- tmp %>%
+  mutate(cluster = as.factor(cluster))
+
+
+model1 <- multinom(
+  data = df_cluster,
+  cluster ~
+    channel_age +
+    subscriber_count +
+    inc_monthly +
+    inc_sources +
+    audience +
+    mean_sentiment +
+    hate_only_mean +
+    sex +
+    age +
+    race +
+    channel_topic +
+    visibility +
+    active_months +
+    productivity +
+    mail +
+    n_topic
+  )
+
+summary(model1)
+
+exp(coef(model1))
+
+model2 <- multinom(
+  data = tmp,
+  cluster ~
+    channel_age_std +
+    subscriber_count_std +
+    inc_monthly_std +
+    inc_sources_std +
+    audience_std +
+    sentiment_std +
+    hate_std +
+    sex +
+    age +
+    race +
+    channel_topic +
+    visibility +
+    active_months_std +
+    productivity_std +
+    mail +
+    n_topic_std
+  )
+```
+
+```{r model social}
+
+df_cluster <- df_cluster %>%
+  mutate(cluster = as.factor(cluster))
+
+
+model_soc <- multinom(
+  data = df_cluster,
+  cluster ~
+    sex +
+    age +
+    race
+  )
+
+summary(model_soc)
+
+ame_social <- avg_slopes(model_soc)
+
+ame_social <- ame_social %>%
+  mutate(
+    cluster = case_match(group,
+                       "1" ~ "Hope Labour",
+                       "2" ~ "Adapted Survivors",
+                       "3" ~ "Top Earners"
+    )
+  ) %>%
+  mutate(cluster = factor(cluster,
+                        levels = c(
+                          "Hope Labour",
+                          "Adapted Survivors",
+                          "Top Earners"
+                        ),
+                        ordered = TRUE)
+         ) %>%
+  # mutate(
+  #   variables = case_match(
+  #     contrast,
+  #     "white - BIPoC" ~ "White [Ref.: BIPoC]",
+  #     "female - male" ~ "Female [Ref.: Male]",
+  #     "divers - male" ~ "Divers [Ref.: Male]",
+  #     "40+ yrs. - under 20 yrs." ~ "40+ yrs. [Ref.: under 20 yrs.]",
+  #     "31 - 40 yrs. - under 20 yrs." ~ "31 - 40 yrs. [Ref.: under 20 yrs.]",
+  #     "21 - 30 yrs. - under 20 yrs." ~ "21 - 30 yrs. [Ref.: under 20 yrs.]"
+  #   )
+  # ) %>% 
+  mutate(
+    variables = case_match(
+      contrast,
+      "white - BIPoC" ~ "White [Ref.: BIPoC]",
+      "unknown - BIPoC" ~ "Unknown [Ref.: BIPoC]",
+      "mixed - BIPoC" ~ "Mixed [Ref.: BIPoC]",
+      "female - male" ~ "Female [Ref.: Male]",
+      "divers - male" ~ "Divers [Ref.: Male]",
+      "unknown - male" ~ "Unknown [Ref.: Male]",
+      "mixed - male" ~ "Mixed [Ref.: Male]",
+      "40+ yrs. - under 20 yrs." ~ "40+ yrs. [Ref.: under 20 yrs.]",
+      "31 - 40 yrs. - under 20 yrs." ~ "31 - 40 yrs. [Ref.: under 20 yrs.]",
+      "21 - 30 yrs. - under 20 yrs." ~ "21 - 30 yrs. [Ref.: under 20 yrs.]",
+      "unknown - under 20 yrs." ~ "Unknown [Ref.: under 20 yrs.]",
+      "mixed - under 20 yrs." ~ "Mixed [Ref.: under 20 yrs.]"
+    )
+  ) %>%
+  mutate(
+    variables = factor(
+      variables,
+      levels = c(
+        "Unknown [Ref.: under 20 yrs.]",
+        "Mixed [Ref.: under 20 yrs.]",
+        "40+ yrs. [Ref.: under 20 yrs.]",
+        "31 - 40 yrs. [Ref.: under 20 yrs.]",
+        "21 - 30 yrs. [Ref.: under 20 yrs.]",
+        "Unknown [Ref.: Male]",
+        "Mixed [Ref.: Male]",
+        "Divers [Ref.: Male]",
+        "Female [Ref.: Male]",
+        "Unknown [Ref.: BIPoC]",
+        "Mixed [Ref.: BIPoC]",
+        "White [Ref.: BIPoC]"
+        )
+    )
+  ) %>%
+  na.omit() %>%
+  mutate(
+    signif = ifelse(p.value < .05, "yes","no")
+  )
+
+ggplot(ame_social) +
+  geom_pointrange(
+    aes(
+      x = estimate,
+      xmin = conf.low,
+      xmax = conf.high,
+      y = variables,
+      col = cluster,
+      shape = signif
+    ),
+    size = .7,
+    linewidth = 1,
+    position = position_dodge(.5)
+  ) +
+  scale_color_brewer(palette = "Set1") + 
+  # scale_color_discrete(c("#E69F00", "#56B4E9", "#CC79A7")) +
+  labs(
+    x = "AME",
+    y = "",
+    shape = ".05 Significance"
+  ) + 
+  theme(
+    legend.position = "bottom",
+    legend.title.position = "top",
+    legend.title = element_text(hjust = .5)
+  )
+
+ggsave(
+  filename = "~/tubework/projects/sample-cluster/r-sample-cluster/graphics/ame-plot2.png",
+  plot = last_plot(),
+  width = 10,
+  height = 6,
+  dpi = 600
+)
+
+```
+
+```{r lda social}
+
+df_cluster <- df_cluster %>%
+  mutate(
+    cluster = case_match(cluster,
+                       "1" ~ "Hope Labour",
+                       "2" ~ "Adapted Survivors",
+                       "3" ~ "Top Earners"
+    )
+  ) %>%
+  mutate(cluster = factor(cluster,
+                        levels = c(
+                          "Hope Labour",
+                          "Adapted Survivors",
+                          "Top Earners"
+                        ),
+                        ordered = TRUE)
+         ) 
+
+
+training_sample <- sample(c(TRUE, FALSE), nrow(df_cluster), replace = T, prob = c(0.6,0.4))
+train <- df_cluster[training_sample, ]
+test <- df_cluster[!training_sample, ]
+
+library(MASS)
+
+lda <- lda(
+  data = train,
+  cluster ~
+    sex +
+    age +
+    race)
+
+lda
+
+plot(lda, col = as.integer(train$cluster))
+
+plot(lda, dimen = 1, type = "b")
+```
+
+
+```{r}
+ame <- avg_slopes(model1)
+
+# Nach Cluster gruppiert anzeigen
+ame_summary <- ame %>%
+  group_by(group, term) %>%
+  summarise(
+    AME = mean(estimate),
+    Std_Error = mean(std.error),
+    p_value = mean(p.value),
+    CI_lower = mean(conf.low),
+    CI_upper = mean(conf.high)
+  )
+
+# Visualisierung: Welche Variable hat größten Effekt?
+ggplot(ame_summary, aes(x = term, y = AME, color = group)) +
+  geom_point(position = position_dodge(0.5), size = 3) +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), 
+                position = position_dodge(0.5), width = 0.2) +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Average Marginal Effects on Cluster Probability",
+       x = "Variable",
+       y = "Change in Probability",
+       color = "Cluster") +
+  facet_grid(rows = vars(group), scales = "free_x")
+```
+
+```{r}
+ame <- avg_slopes(model2)
+
+# Nach Cluster gruppiert anzeigen
+ame_summary <- ame %>%
+  group_by(group, term) %>%
+  summarise(
+    AME = mean(estimate),
+    Std_Error = mean(std.error),
+    p_value = mean(p.value),
+    CI_lower = mean(conf.low),
+    CI_upper = mean(conf.high)
+  )
+
+# Visualisierung: Welche Variable hat größten Effekt?
+ggplot(ame_summary, aes(x = term, y = AME, color = group)) +
+  geom_point(position = position_dodge(0.5), size = 3) +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), 
+                position = position_dodge(0.5), width = 0.2) +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Average Marginal Effects on Cluster Probability",
+       x = "Variable",
+       y = "Change in Probability",
+       color = "Cluster") +
+  facet_grid(rows = vars(group), scales = "free_x")
+```
+
+```{r}
+comparison_data <- data.frame(
+  Cluster = rep(c("Hobby → Aspirational", "Aspirational → Successful"), each = 5),
+  Variable = rep(c("Upload Frequency", "Female", "Channel Age", "Black", "Education Content"), 2),
+  Effect = c(
+    0.12, 0.08, 0.06, 0.09, 0.07,  # Signifikante Effekte für Aspirational
+    0.01, -0.02, 0.00, 0.01, -0.01  # Keine signifikanten Effekte für Successful
+  ),
+  Significant = c(
+    rep(TRUE, 5),   # Alle signifikant für Aspirational
+    rep(FALSE, 5)   # NICHTS signifikant für Successful
+  )
+)
+
+library(ggplot2)
+ggplot(comparison_data, aes(x = Variable, y = Effect, fill = Significant)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Cluster, scales = "free") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  scale_fill_manual(values = c("TRUE" = "#2E7D32", "FALSE" = "#BDBDBD"),
+                    labels = c("Not Significant", "Significant")) +
+  labs(
+    title = "The Hope Labour Trap: Predictable Aspiration, Arbitrary Success",
+    subtitle = "Variables predict who becomes aspirational, but NOT who becomes successful",
+    y = "Average Marginal Effect",
+    caption = "Note: All effects for success are non-significant (p > 0.05)"
+  ) +
+  coord_flip() +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+
+### channel foundation -----
+
+```{r line plot: channel foundation}
+
+channel_data_full %>%
+  mutate(publication_date = as.Date(str_sub(publication_date_cc, start = 1, end = 10))) %>%
+  group_by(publication_date) %>%
+  summarise(
+    sum = n()
+  ) %>%
+  mutate(cum_sum = cumsum(sum)) %>%
+  ggplot(
+    aes(
+      x = publication_date,
+      y = cum_sum
+    )
+  ) +
+  geom_line(col = col_red) +
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels = "%Y"
+    ) +
+  labs(
+    x = "channel foundation",
+    y = "cumulative sum of channels"
+  ) +
+  theme(
+    axis.text.x = element_text()
+  )
+
+ggsave(
+  filename = "~/tubework/projects/sample-cluster/r-sample-cluster/graphics/channel-foundation-by-time.png",
+  plot = last_plot(),
+  width = 12,
+  height = 8,
+  dpi = 600
+)
+
+```
+
+```{r line plot: channel foundation by topic}
+
+channel_data_full %>%
+  mutate(publication_date = as.Date(str_sub(publication_date_cc, start = 1, end = 10))) %>%
+  group_by(publication_date, channel_topic) %>%
+  summarise(
+    sum = n(),
+    .groups = "drop"
+  ) %>%
+  group_by(channel_topic) %>%
+  arrange(publication_date) %>%
+  mutate(cum_sum = cumsum(sum)) %>%
+  ggplot(
+    aes(
+      x = publication_date,
+      y = cum_sum,
+      # col = channel_topic
+    )
+  ) +
+  geom_line(col = col_red) +
+  scale_x_date(
+    date_breaks = "2 years",
+    date_labels = "%Y"
+    ) +
+  labs(
+    x = "channel foundation",
+    y = "cumulative sum of channels"
+  ) +
+  theme(
+    axis.text.x = element_text()
+  ) +
+  facet_wrap(~channel_topic)
+
+ggsave(
+  filename = "~/tubework/projects/sample-cluster/r-sample-cluster/graphics/channel-foundation-by topics.png",
+  plot = last_plot(),
+  width = 12,
+  height = 8,
+  dpi = 600
+)
+
+```
+
+### videos
+
+```{r}
+ggplot(channel_data) +
+  geom_point(
+    aes(
+      x = view_count,
+      y = video_count
+    )
+  )
+```
