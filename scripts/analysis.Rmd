@@ -242,6 +242,7 @@ cluster analysis only with channel metrics
 - high correlation of monthly adsense earnings and views --> only keep monthly earnings
 - high correlation of productivity and video count --> only keep productivity
 
+
 ```{r cluster analysis: channel metrics}
 tmp <- df_cluster %>%
   transmute(
@@ -272,6 +273,47 @@ res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
 df_cluster$cluster <- res.HCPC[["data.clust"]]$clust
 tmp$cluster <- res.HCPC[["data.clust"]]$clust
 
+```
+
+
+```{r cluster analysis without unknowns}
+tmp <- df_cluster %>%
+  filter(race != "unknown") %>%
+  filter(age != "unknown") %>%
+  filter(sex != "unknown") %>%
+  filter(race != "mixed") %>%
+  filter(age != "mixed") %>%
+  filter(sex != "mixed") %>%
+  filter(sex != "divers") %>%
+  filter(visibility != "unknown") %>%
+  filter(visibility != "mixed") %>%
+  # filter(last_video < (365*2)) %>%
+    transmute(
+    subscriber_count_std = scale(subscriber_count)[,1],
+    # video_count_std = scale(video_count)[,1], #
+    # inc_monthly_std = scale(inc_monthly)[,1], #
+    inc_sources_std = scale(inc_sources)[,1],
+    # channel_age_std = scale(channel_age)[,1], #
+    active_months_std = scale(active_months)[,1],
+    last_video_std = scale(last_video)[,1],
+    productivity_std = scale(productivity)[,1],
+    audience_std = scale(audience)[,1],
+    sentiment_std = scale(mean_sentiment)[,1],
+    hate_std = scale(hate_only_mean)[,1],
+    n_topic_std = scale(n_topic)[,1],
+    channel_topic,
+    # visibility, #
+    is_monetized,
+    mail
+  ) %>%
+  na.omit()
+
+cluster <- Factoshiny(tmp)
+
+res.PCA<-PCA(tmp,ncp=Inf, scale.unit=FALSE,quali.sup=c(11,12,13),graph=FALSE)
+res.HCPC<-HCPC(res.PCA,nb.clust=5,consol=FALSE,graph=FALSE)
+
+# res.PCA<-PCA(tmp,quali.sup=c(13,14,15,16),graph=FALSE)
 ```
 
 
@@ -308,8 +350,7 @@ cluster <- Factoshiny(tmp)
 ```
 
 
-
-```{r performance of cluster analysis}
+```{r cluster analysis plots}
 
 plot.HCPC(res.HCPC,choice='tree',title='Hierarchical tree')
 plot.HCPC(res.HCPC,choice='map',draw.tree=FALSE,title='Factor map')
