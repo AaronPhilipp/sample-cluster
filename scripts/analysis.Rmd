@@ -27,6 +27,7 @@ library(ggeffects)
 library(stargazer)
 library(ggcorrplot)
 library(margins)
+library(xlsx)
 
 `%!in%` = Negate(`%in%`)
 
@@ -80,6 +81,37 @@ load(file = "data/video_data_2025-04-30.RData")
 # calcute a productivity variable
 tmp <- video_data %>%
   filter(channel_id %in% channel_data$channel_id) %>%
+  mutate(
+    tmp = str_match(duration, "PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?") %>% 
+           as.data.frame() %>%
+  transmute(
+    hours   = as.numeric(V2) %>% replace_na(0),
+    minutes = as.numeric(V3) %>% replace_na(0),
+    seconds = as.numeric(V4) %>% replace_na(0)
+  ) %>%
+    mutate(
+      total_minutes = hours * 60 + minutes + seconds / 60
+    ) %>%
+    select(total_minutes)
+  ) %>%
+  mutate("duration_minutes" = unlist(tmp)) %>%
+  select(-tmp) %>%
+  left_join(
+    channel_data %>% select(channel_id, channel_topic),
+    by = "channel_id"
+  ) %>%
+  group_by(channel_topic) %>%
+  mutate(mean_dur_topic = mean(duration_minutes, na.rm = TRUE),
+         sd_dur_topic= sd(duration_minutes,  na.rm=TRUE),
+         z_duration = (duration_minutes - mean_dur_topic)/sd_dur_topic) %>%
+  ungroup() %>%
+  group_by(channel_id) %>%
+  mutate(mean_z_duration = mean(z_duration, na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(mean_z_duration, channel_id) %>%
+  distinct()
+
+tmp2 <- video_data %>%
   mutate(month = str_sub(publication_date,1,7)) %>%
   group_by(channel_id, month) %>%
   count() %>%
@@ -90,32 +122,44 @@ tmp <- video_data %>%
   group_by(channel_id) %>%
   mutate(productivity = sum(n)/active_months) %>%
   select(channel_id,active_months, productivity, max) %>%
-  distinct() %>%
-  left_join(
-    channel_data %>% select(channel_id, channel_topic),
-    by = "channel_id"
-  ) %>%
-  group_by(channel_topic) %>%
-  mutate(prod_mean_topic = mean(productivity)) %>%
-  mutate(prod_comp_topic = productivity/prod_mean_topic) %>%
-  ungroup() %>%
-  select(-channel_topic, -max)
+  select(-max) %>%
+  distinct() 
+  #   left_join(
+  #   channel_data %>% select(channel_id, channel_topic),
+  #   by = "channel_id"
+  # ) %>%
+  # group_by(channel_topic) %>%
+  # mutate(prod_mean_topic = mean(productivity)) %>%
+  # mutate(prod_comp_topic = productivity/prod_mean_topic) %>%
+  # ungroup() 
+  # select(-channel_topic, -max)
 
 # calculate last_video variable
-tmp <- video_data %>%
+tmp3 <- video_data %>%
   group_by(channel_id) %>%
   summarise(last_video = max(publication_date)) %>%
-  mutate(last_video = as.numeric(as.Date("2023-05-15") - as.Date(str_sub(last_video,1,10)))) %>%
-  left_join(tmp, by = "channel_id")
+  mutate(last_video = as.numeric(as.Date("2023-05-15") - as.Date(str_sub(last_video,1,10))))
 
 channel_data <- channel_data %>%
   left_join(
     tmp,
     by = "channel_id"
-  ) %>%
+  )
+
+channel_data <- channel_data %>%
+  left_join(
+    tmp2,
+    by = "channel_id"
+  )
+
+channel_data <- channel_data %>%
+  left_join(
+    tmp3,
+    by = "channel_id"
+  )%>%
   mutate(publication_date = as.Date(publication_date))
 
-rm(video_data,tmp)
+rm(video_data,tmp, tmp2, tmp3)
 ```
 
 
@@ -141,7 +185,7 @@ df_all <- channel_data %>%
     visibility,
     active_months,
     productivity,
-    prod_comp_topic,
+    mean_z_duration,
     mail,
     last_video,
     publication_date
@@ -199,6 +243,17 @@ col_red <- "#F8766D"
 ```
 
 
+##### Sample composition
+
+```{r sample composition}
+table(df_cut$age)
+table(df_cut$sex)
+table(df_cut$race)
+table(df_cut$channel_topic)
+```
+
+
+
 ##### Cluster Analysis
 
 
@@ -210,15 +265,16 @@ ggcorrplot(
     df_cut %>%
     transmute(
         subscriber = subscriber_count,
-        "all-time views" = view_count,
-        videos = video_count,
-        "channel age" = channel_age,
+        # "all-time views" = view_count,
+        # videos = video_count,
+        # "channel age" = channel_age,
         "monthly AdSense earnings" = inc_monthly,
         "monetization strategies" = inc_sources,
         "audience strength" = audience,
         "mean sentiment" = mean_sentiment,
-        "exposure to hate speech" = hate_only_mean,
+        # "exposure to hate speech" = hate_only_mean,
         productivity,
+        "duration" = mean_z_duration,
         "months active" = active_months,
         competition = n_topic,
         "last upload" = last_video
@@ -274,20 +330,20 @@ cluster analysis only with channel metrics
 
 ```{r cluster analysis: 3 clusters}
 df_cluster <- df_cut %>%
-  # filter(last_video < (365*.5)) %>%
+  # filter(last_video < (365*1)) %>%
   transmute(
     subscriber_count_std = scale(subscriber_count)[,1],
     inc_sources_std = scale(inc_sources)[,1],
     inc_monthly_std = scale(inc_monthly)[,1],
     mail,
     active_months_std = scale(active_months)[,1],
-    channel_age_std = scale(channel_age)[,1], #
+    # channel_age_std = scale(channel_age)[,1], #
+    mean_z_dur_std = scale(mean_z_duration)[,1],
     productivity_std = scale(productivity)[,1],
-    # video_count_std = scale(video_count)[,1], #
     last_video_std = scale(last_video)[,1],
     audience_std = scale(audience)[,1],
     sentiment_std = scale(mean_sentiment)[,1],
-    hate_std = scale(hate_only_mean)[,1],
+    # hate_std = scale(hate_only_mean)[,1],
     # n_topic_std = scale(n_topic)[,1], #
     channel_topic,
   ) %>%
@@ -295,8 +351,10 @@ df_cluster <- df_cut %>%
 
 cluster <- Factoshiny(df_cluster)
 
-res.PCA<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,12),graph=FALSE)
-res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
+res_pca<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,11),graph=FALSE)
+res_hcpc<-HCPC(res_pca,nb.clust=3,consol=FALSE,graph=FALSE)
+
+res_hcpc$call
 
 df_cut$cluster <- res.HCPC[["data.clust"]]$clust
 
@@ -305,7 +363,7 @@ table(df_cut$cluster)
 ```
 
 
-```{r cluster analysis: 3 clusters without channel age}
+```{r cluster analysis: 4 cluster}
 df_cluster <- df_cut %>%
   # filter(last_video < (365*1)) %>%
   transmute(
@@ -315,39 +373,7 @@ df_cluster <- df_cut %>%
     mail,
     active_months_std = scale(active_months)[,1],
     # channel_age_std = scale(channel_age)[,1], #
-    productivity_std = scale(productivity)[,1],
-    # video_count_std = scale(video_count)[,1], #
-    last_video_std = scale(last_video)[,1],
-    audience_std = scale(audience)[,1],
-    sentiment_std = scale(mean_sentiment)[,1],
-    hate_std = scale(hate_only_mean)[,1],
-    n_topic_std = scale(n_topic)[,1], #
-    channel_topic,
-  ) %>%
-  na.omit()
-
-cluster <- Factoshiny(df_cluster)
-
-res.PCA<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,12),graph=FALSE)
-res.HCPC<-HCPC(res.PCA,nb.clust=3,consol=FALSE,graph=FALSE)
-
-df_cut$cluster <- res.HCPC[["data.clust"]]$clust
-
-table(df_cut$cluster)
-
-```
-
-
-```{r cluster analysis: 5 clusters}
-df_cluster <- df_cut %>%
-  # filter(last_video < (365*.5)) %>%
-  transmute(
-    subscriber_count_std = scale(subscriber_count)[,1],
-    inc_sources_std = scale(inc_sources)[,1],
-    inc_monthly_std = scale(inc_monthly)[,1],
-    mail,
-    active_months_std = scale(active_months)[,1],
-    # channel_age_std = scale(channel_age)[,1], #
+    mean_z_dur_std = scale(mean_z_duration)[,1],
     productivity_std = scale(productivity)[,1],
     # video_count_std = scale(video_count)[,1], #
     last_video_std = scale(last_video)[,1],
@@ -361,8 +387,8 @@ df_cluster <- df_cut %>%
 
 cluster <- Factoshiny(df_cluster)
 
-res.PCA<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,11),graph=FALSE)
-res.HCPC<-HCPC(res.PCA,nb.clust=5,consol=FALSE,graph=FALSE)
+res.PCA<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,12),graph=FALSE)
+res.HCPC<-HCPC(res.PCA,nb.clust=4,consol=FALSE,graph=FALSE)
 
 df_cut$cluster <- res.HCPC[["data.clust"]]$clust
 
@@ -371,24 +397,25 @@ table(df_cut$cluster)
 ```
 
 
-```{r cluster analysis: 5 clusters intensity try}
+
+```{r cluster analysis with log transformations}
 df_cluster <- df_cut %>%
-  mutate(intensity = active_months/channel_age) %>%
-  # filter(last_video < (365*.5)) %>%
+  # filter(last_video < (365*1)) %>%
   transmute(
-    subscriber_count_std = scale(subscriber_count)[,1],
-    inc_sources_std = scale(inc_sources)[,1],
-    inc_monthly_std = scale(inc_monthly)[,1],
+    subscriber_count_std = scale(log(subscriber_count))[,1],
+    # subscriber_count_std = scale(subscriber_count)[,1],
+    inc_sources_std = scale(log(inc_sources+1))[,1],
+    inc_monthly_std = scale(log(inc_monthly + 1))[,1],
     mail,
-    intensity_count_std = scale(intensity)[,1],
     active_months_std = scale(active_months)[,1],
     # channel_age_std = scale(channel_age)[,1], #
-    productivity_std = scale(productivity)[,1],
+    mean_z_dur_std = scale(mean_z_duration)[,1],
+    productivity_std = scale(log(productivity))[,1],
     # video_count_std = scale(video_count)[,1], #
-    last_video_std = scale(last_video)[,1],
+    last_video_std = scale(log(last_video+1))[,1],
     audience_std = scale(audience)[,1],
-    sentiment_std = scale(mean_sentiment)[,1],
-    hate_std = scale(hate_only_mean)[,1],
+    # sentiment_std = scale(mean_sentiment)[,1],
+    hate_std = scale(log(hate_only_mean + 1))[,1],
     n_topic_std = scale(n_topic)[,1], #
     channel_topic,
   ) %>%
@@ -396,8 +423,8 @@ df_cluster <- df_cut %>%
 
 cluster <- Factoshiny(df_cluster)
 
-res.PCA<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,11),graph=FALSE)
-res.HCPC<-HCPC(res.PCA,nb.clust=5,consol=FALSE,graph=FALSE)
+res.PCA<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,12),graph=FALSE)
+res.HCPC<-HCPC(res.PCA,nb.clust=4,consol=FALSE,graph=FALSE)
 
 df_cut$cluster <- res.HCPC[["data.clust"]]$clust
 
@@ -406,37 +433,30 @@ table(df_cut$cluster)
 ```
 
 
-
 ```{r cluster analysis robustness checks}
-tmp <- df_cluster %>%
-  filter(video_count > 36 & channel_age > 36) %>%
-  # filter(last_video < 100) %>%
-  # filter(last_video < (365*2)) %>%
-    transmute(
+
+df_cluster <- df_cut %>%
+  # filter(last_video < (365*1)) %>%
+  filter(active_months > 24) %>%
+  transmute(
     subscriber_count_std = scale(subscriber_count)[,1],
-    # video_count_std = scale(video_count)[,1],
-    # inc_monthly_std = scale(inc_monthly)[,1],
     inc_sources_std = scale(inc_sources)[,1],
-    channel_age_std = scale(channel_age)[,1],
+    inc_monthly_std = scale(inc_monthly)[,1],
+    mail,
     active_months_std = scale(active_months)[,1],
-    last_video_std = scale(last_video)[,1],
+    # channel_age_std = scale(channel_age)[,1], #
+    mean_z_dur_std = scale(mean_z_duration)[,1],
     productivity_std = scale(productivity)[,1],
+    last_video_std = scale(last_video)[,1],
     audience_std = scale(audience)[,1],
     sentiment_std = scale(mean_sentiment)[,1],
-    hate_std = scale(hate_only_mean)[,1],
-    n_topic_std = scale(n_topic)[,1],
+    # hate_std = scale(hate_only_mean)[,1],
+    # n_topic_std = scale(n_topic)[,1], #
     channel_topic,
-    visibility,
-    is_monetized,
-    mail
   ) %>%
   na.omit()
 
-cluster <- Factoshiny(tmp)
-
-
-# df_cluster$cluster <- res.HCPC[["data.clust"]]$clust
-# tmp$cluster <- res.HCPC[["data.clust"]]$clust
+cluster <- Factoshiny(df_cluster)
 
 ```
 
@@ -453,37 +473,29 @@ plot.HCPC(res.HCPC,choice='3D.map',ind.names=FALSE,centers.plot=FALSE,angle=60,t
 ```{r elbow plot}
 
 tmp <- data.frame(
-  cluster = 1:20
+  cluster = 1:20,
+  within_inertia = res_hcpc$call$t$within[1:20]
 )
-
-inertia <- sum(res.HCPC$call$t$inert.gain)
-
-tmp[1,"inertia"] <- sum(res.HCPC$call$t$inert.gain)
-
-for (i in 1:19) {
-  inertia <- inertia - (res.HCPC$call$t$inert.gain[i])
-  
-  tmp[i + 1,"inertia"] <- inertia
-}
 
 
 ggplot(
   data = tmp,
   aes(
     x = cluster,
-    y = inertia
+    y = within_inertia
   )
   ) +
-  # geom_point(size = 3) +
-  # geom_line(linewidth = 1) +
-  geom_col() +
-  scale_x_continuous(breaks = 1:20) + 
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  # geom_col() +
+  scale_x_continuous(limits = c(1,10), breaks = 1:10) +
   scale_y_continuous(breaks = 1:11, limits = c(1,11)) +
+  labs(x = "number of clusters", y = "within inertia") +
   theme(
     panel.grid.minor.x = element_blank()
   )
 
-ggsave(filename = "graphics/cluster_elbow_plot.png",
+ggsave(filename = "graphics/elbow_plot.png",
        plot = last_plot(),
        width = 12,
        height = 8,
@@ -516,43 +528,22 @@ ggsave(filename = "graphics/cluster_elbow_plot2.png",
 ```
 
 
-```{r dot plot: cluster analysis}
+```{r cluster plot}
 
 df_cut %>%
   group_by(cluster) %>%
-  # mutate(
-  #   cluster = case_match(cluster,
-  #                      "1" ~ paste("Hope Labour (N =",sum(df_cut$cluster == 1), ")",sep = ""),
-  #                      "2" ~ paste("High-Risk Communicators (N =",sum(df_cut$cluster == 2), ")",sep = ""),
-  #                      "3" ~ paste("Adapted Survivors (N =",sum(df_cut$cluster == 3), ")",sep = ""),
-  #                      "4" ~ paste("Top Earners (N =",sum(df_cut$cluster == 4), ")",sep = "")
-  #   )
-  # ) %>%
-  # mutate(cluster = factor(cluster,
-  #                       levels = c(
-  #                         paste("Hope Labour (N =",sum(df_cut$cluster == 1), ")",sep = ""),
-  #                         paste("High-Risk Communicators (N =",sum(df_cut$cluster == 2), ")",sep = ""),
-  #                         paste("Adapted Survivors (N =",sum(df_cut$cluster == 3), ")",sep = ""),
-  #                         paste("Top Earners (N =",sum(df_cut$cluster == 4), ")",sep = "")
-  #                       ),
-  #                       ordered = TRUE)
-  #        ) %>%
   mutate(
     cluster = case_match(cluster,
-                       "1" ~ paste("Hope Labour Cemetry (N =",sum(df_cut$cluster == 1), ")",sep = ""),
-                       "2" ~ paste("Hope Labour (N =",sum(df_cut$cluster == 2), ")",sep = ""),
-                       "3" ~ paste("High-Risk Communicators (N =",sum(df_cut$cluster == 3), ")",sep = ""),
-                       "4" ~ paste("Adapted Survivors (N =",sum(df_cut$cluster == 4), ")",sep = ""),
-                       "5" ~ paste("Top Earners (N =",sum(df_cut$cluster == 5), ")",sep = "")
+                       "1" ~ paste("Hope Labour (N =",sum(df_cut$cluster == 1), ")",sep = ""),
+                       "2" ~ paste("Adapted Survivors (N =",sum(df_cut$cluster == 2), ")",sep = ""),
+                       "3" ~ paste("Top Earners (N =",sum(df_cut$cluster == 3), ")",sep = "")
     )
   ) %>%
   mutate(cluster = factor(cluster,
                         levels = c(
-                          paste("Hope Labour Cemetry (N =",sum(df_cut$cluster == 1), ")",sep = ""),
-                          paste("Hope Labour (N =",sum(df_cut$cluster == 2), ")",sep = ""),
-                          paste("High-Risk Communicators (N =",sum(df_cut$cluster == 3), ")",sep = ""),
-                          paste("Adapted Survivors (N =",sum(df_cut$cluster == 4), ")",sep = ""),
-                          paste("Top Earners (N =",sum(df_cut$cluster == 5), ")",sep = "")
+                          paste("Hope Labour (N =",sum(df_cut$cluster == 1), ")",sep = ""),
+                          paste("Adapted Survivors (N =",sum(df_cut$cluster == 2), ")",sep = ""),
+                          paste("Top Earners (N =",sum(df_cut$cluster == 3), ")",sep = "")
                         ),
                         ordered = TRUE)
          ) %>%
@@ -560,12 +551,13 @@ df_cut %>%
   geom_point(
     aes(
       x = subscriber_count,
-      y = active_months,
+      # y = active_months,
+      y = audience,
       col = inc_sources,
-      # size = productivity
-      size = hate_only_mean
+      size = mean_z_duration
+      # col = productivity
     ),
-    alpha = 0.6
+    alpha = 0.4
   ) +
   geom_vline(
     xintercept = 1000,
@@ -577,13 +569,14 @@ df_cut %>%
   ) +
   # scale_color_(breaks = 1:8) +
   labs(
-    x = "amount of subscribers",
-    y = "active months of the channel (in months)",
+    x = "subscriber count",
+    # y = "active months of the channel (in months)",
+    y = "audience strength",
     col = "monetization strategies",
-    size = "exposure to hate speech",
-    # size = "productivity",
+    size = "workload per video",
+    # size = "exposure to hate speech",
     caption = paste("Note: data based on N =", format(nrow(df_cut), big.mark = ","), "channels")
-  ) +
+  ) + 
   facet_wrap(~ cluster,
              # scales = "free"
              ) +
@@ -595,8 +588,8 @@ df_cut %>%
 
 ggsave(filename = "graphics/cluster_analysis.png",
        plot = last_plot(),
-       width = 16,
-       height = 8,
+       width = 12,
+       height = 6,
        dpi = 300)
 ```
 
@@ -610,37 +603,23 @@ ggsave(filename = "graphics/cluster_analysis.png",
 tmp <- df_cut %>%
   mutate(
     cluster_name = case_match(cluster,
-                       "1" ~ "Hope Labour Cemetry",
-                       "2" ~ "Hope Labour",
-                       "3" ~ "High-Risk Communicators",
-                       "4" ~ "Adapted Survivors",
-                       "5" ~ "Top Earners"
+                       "1" ~ "Hope Labour",
+                       "2" ~ "Adapted Survivors",
+                       "3" ~ "Top Earners"
     )
   ) %>%
   mutate(cluster_name = factor(cluster_name,
                         levels = c(
-                          "Hope Labour Cemetry",
                           "Hope Labour",
-                          "High-Risk Communicators",
                           "Adapted Survivors",
                           "Top Earners"
                         ),
                         ordered = TRUE)
-         ) #%>%
-  # mutate(
-  #   cluster_new = ifelse(cluster %in% c(1,2),1,cluster)
-  # )
-  # mutate(
-  #   cluster_new = ifelse(cluster %in% c(4,5) , 4,cluster)
-  # ) %>% filter(cluster_new != 5) %>% filter(cluster_new != 1)
-  # filter(cluster_name != "Hope Labour Cemetry")
-
-table(tmp$cluster_new)
+         )
 
 model_soc <- multinom(
   data = tmp,
   cluster_name ~
-    # cluster_new ~
     age +
     sex +
     race +
@@ -649,6 +628,8 @@ model_soc <- multinom(
 
 summary(model_soc)
 tidy_sum <- tidy(model_soc, conf.int = TRUE)
+
+write.xlsx(tidy_sum, file = "regresssion_results.xlsx")
 
 tbl_regression(model_soc, exp = TRUE)
 
@@ -666,14 +647,20 @@ stargazer(
   out = "model_soc.html"
   )
 
-ggeffect(model_soc, terms = "sex") %>%
-  plot()
+```
 
-ggeffect(model_soc, terms = "age") %>%
-  plot()
 
-ggeffect(model_soc, terms = "race") %>%
-  plot()
+```{r size of categories}
+
+table(tmp$cluster_name, tmp$age)
+table(tmp$cluster_name, tmp$sex)
+table(tmp$cluster_name, tmp$race)
+table(tmp$cluster_name, tmp$channel_topic)
+
+```
+
+
+```{r average marginal effects}
 
 ame_social <- avg_slopes(model_soc)
 
@@ -747,17 +734,7 @@ ggsave(
 ```
 
 
-```{r size of categories}
-
-table(tmp$cluster_name, tmp$age)
-table(tmp$cluster_name, tmp$sex)
-table(tmp$cluster_name, tmp$race)
-table(tmp$cluster_name, tmp$channel_topic)
-
-```
-
-
-```{r predicted probability}
+```{r predicted probabilities}
 
 # Predicted probabilities für alle Personen
 preds <- predict(model_soc, type = "probs")
@@ -766,46 +743,27 @@ preds_df <- as.data.frame(preds)
 # Baseline probability (Durchschnitt über alle Personen)
 colMeans(preds)
 
-# pred_class <- apply(preds, 1, function(x) colnames(preds)[which.max(x)])
-# pred_class_df <- as.data.frame(pred_class)
-
+# join the prediction to the original dataframe
 df_preds <- cbind(tmp, preds)
 
-df_long <- df_preds %>%
-  group_by(sex) %>%
-  summarise(across(colnames(preds), mean)) %>%
-  tidyr::pivot_longer(-sex, names_to = "cluster", values_to = "prob")
 
-ggplot(df_long, aes(x = cluster, y = prob, fill = factor(sex))) +
-  geom_col(position = "dodge") +
-  labs(x = "Cluster", y = "Predicted Probability", fill = "Sex") +
-  theme_minimal()
+### Gender
 
-df_long <- df_preds %>%
-  group_by(race) %>%
-  summarise(across(colnames(preds), mean)) %>%
-  tidyr::pivot_longer(-race, names_to = "cluster", values_to = "prob")
-
-ggplot(df_long, aes(x = cluster, y = prob, fill = factor(race))) +
-  geom_col(position = "dodge") +
-  labs(x = "Cluster", y = "Predicted Probability", fill = "Race") +
-  theme_minimal()
-
-df_long <- df_preds %>%
-  group_by(age) %>%
-  summarise(across(colnames(preds), mean)) %>%
-  tidyr::pivot_longer(-age, names_to = "cluster", values_to = "prob")
-
-ggplot(df_long, aes(x = cluster, y = prob, fill = factor(age))) +
-  geom_col(position = "dodge") +
-  labs(x = "Cluster", y = "Predicted Probability", fill = "Age") +
-  theme_minimal()
-
-# pred_by_female <- margins(model_soc, variables = "sex", type = "probs", at = list(sex = c("female","male")))
-# summary(pred_by_female)
-# plot(pred_by_female)
+# ggeffect(model_soc, terms = "sex") %>%
+#   plot()
 
 
+# df_long <- df_preds %>%
+#   group_by(sex) %>%
+#   summarise(across(colnames(preds), mean)) %>%
+#   tidyr::pivot_longer(-sex, names_to = "cluster", values_to = "prob")
+# 
+# ggplot(df_long, aes(x = cluster, y = prob, fill = factor(sex))) +
+#   geom_col(position = "dodge") +
+#   labs(x = "Cluster", y = "Predicted Probability", fill = "Sex") +
+#   theme_minimal()
+
+# manual calculation of predicted probabilities
 pp <- predictions(model_soc,
                   newdata = datagrid(sex = c("male","female")),
                   type = "probs")
@@ -829,6 +787,22 @@ ggsave(
   dpi = 600
 )
 
+
+### Race
+
+# ggeffect(model_soc, terms = "race") %>%
+#   plot()
+
+# df_long <- df_preds %>%
+#   group_by(race) %>%
+#   summarise(across(colnames(preds), mean)) %>%
+#   tidyr::pivot_longer(-race, names_to = "cluster", values_to = "prob")
+# 
+# ggplot(df_long, aes(x = cluster, y = prob, fill = factor(race))) +
+#   geom_col(position = "dodge") +
+#   labs(x = "Cluster", y = "Predicted Probability", fill = "Race") +
+#   theme_minimal()
+
 pp <- predictions(model_soc,
                   newdata = datagrid(race = c("BIPoC","white")),
                   type = "probs")
@@ -851,6 +825,23 @@ ggsave(
   dpi = 600
 )
 
+
+### AGE
+
+# ggeffect(model_soc, terms = "age") %>%
+#   plot()
+
+# df_long <- df_preds %>%
+#   group_by(age) %>%
+#   summarise(across(colnames(preds), mean)) %>%
+#   tidyr::pivot_longer(-age, names_to = "cluster", values_to = "prob")
+# 
+# ggplot(df_long, aes(x = cluster, y = prob, fill = factor(age))) +
+#   geom_col(position = "dodge") +
+#   labs(x = "Cluster", y = "Predicted Probability", fill = "Age") +
+#   theme_minimal()
+
+
 pp <- predictions(model_soc,
                   newdata = datagrid(age = c("under 20 yrs.","21 - 30 yrs.","31 - 40 yrs.","40+ yrs.")),
                   type = "probs")
@@ -860,25 +851,21 @@ ggplot(pp, aes(x = group, y = estimate, col = age)) +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
                 size = 1,
                 position = position_dodge(width = 0.9), width = 0.2) +
-  labs(y = "Predicted probability", x = "Cluster") +
-  theme(axis.text.x = element_text(angle = 35, hjust = 1),
+  labs(y = "Predicted probability", x = "") +
+  theme(#axis.text.x = element_text(angle = 35, hjust = 1),
         legend.position = "bottom",
         legend.title.position = "top",
         legend.title = element_text(hjust = 0.5))
 ggsave(
   filename = "~/tubework/projects/sample-cluster/r-sample-cluster/graphics/pp_age.png",
   plot = last_plot(),
-  width = 6,
+  width = 12,
   height = 6,
-  dpi = 600
+  dpi = 300
 )
 
-# Direkter Vergleich (Kontraste) zwischen male und female
-cmp <- comparisons(model_soc, variables = "sex", type = "probs")
-summary(cmp)
-
-
 ```
+
 
 ##### combine clusters in logistic regression 
 
@@ -948,26 +935,6 @@ summary(model_log)
 ```
 
 
-##### logistic regression -----
-
-```{r race as dependent variable}
-
-tmp <- channel_data %>%
-  filter(race %in% c("white", "BIPoC")) %>%
-  mutate(race = factor(race))
-  
-model <- glm(
-  data = tmp,
-  family = binomial(link = "logit"),
-  formula = race ~ 
-    channel_age +
-  subscriber_count
-  )
-
-summary(model)
-```
-
-
 ##### other stuff 
 
 
@@ -1009,22 +976,6 @@ lda
 plot(lda, col = as.integer(train$cluster))
 
 plot(lda, dimen = 1, type = "b")
-```
-
-
-```{r quantile regression for subscribers}
-
-quan_reg <- rq(
-  data = df_cluster,
-  tau = seq(.25,.75,by = .25),
-  subscriber_count ~ 
-    age +
-    sex +
-    race
-  )
-
-summary(quan_reg, se = "iid")
-
 ```
 
 
