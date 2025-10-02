@@ -349,17 +349,36 @@ df_cluster <- df_cut %>%
   ) %>%
   na.omit()
 
-cluster <- Factoshiny(df_cluster)
+Factoshiny(df_cluster)
 
 res_pca<-PCA(df_cluster,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,11),graph=FALSE)
 res_hcpc<-HCPC(res_pca,nb.clust=3,consol=FALSE,graph=FALSE)
 
-res_hcpc$call
+# res_hcpc$call
 
-df_cut$cluster <- res.HCPC[["data.clust"]]$clust
+df_cut$cluster <- res_hcpc[["data.clust"]]$clust
 
 table(df_cut$cluster)
+table(df_cut$cluster, df_cut$is_monetized)
 
+df_cut %>%
+  group_by(cluster) %>%
+  summarise(
+    # mean_inc_sources = mean(inc_sources),
+    median_inc_sources = median(inc_sources),
+    mean_inc = mean(inc_monthly),
+    mean_subs = mean(subscriber_count),
+    mean_activity = mean(active_months),
+    median_activity = median(active_months),
+    mean_last_video = mean(last_video),
+    median_last_video = median(last_video)
+  ) %>%
+  print()
+
+df_cut %>%
+  filter(cluster == 1) %>%
+  filter(is_monetized == "yes") %>%
+  summarise(mean_inc = mean(inc_monthly))
 ```
 
 
@@ -395,7 +414,6 @@ df_cut$cluster <- res.HCPC[["data.clust"]]$clust
 table(df_cut$cluster)
 
 ```
-
 
 
 ```{r cluster analysis with log transformations}
@@ -457,15 +475,6 @@ df_cluster <- df_cut %>%
   na.omit()
 
 cluster <- Factoshiny(df_cluster)
-
-```
-
-
-```{r cluster analysis plots}
-
-plot.HCPC(res.HCPC,choice='tree',title='Hierarchical tree')
-plot.HCPC(res.HCPC,choice='map',draw.tree=FALSE,title='Factor map')
-plot.HCPC(res.HCPC,choice='3D.map',ind.names=FALSE,centers.plot=FALSE,angle=60,title='Hierarchical tree on the factor map')
 
 ```
 
@@ -534,14 +543,14 @@ df_cut %>%
   group_by(cluster) %>%
   mutate(
     cluster = case_match(cluster,
-                       "1" ~ paste("Hope Labour (N =",sum(df_cut$cluster == 1), ")",sep = ""),
+                       "1" ~ paste("Hope Labor (N =",sum(df_cut$cluster == 1), ")",sep = ""),
                        "2" ~ paste("Adapted Survivors (N =",sum(df_cut$cluster == 2), ")",sep = ""),
                        "3" ~ paste("Top Earners (N =",sum(df_cut$cluster == 3), ")",sep = "")
     )
   ) %>%
   mutate(cluster = factor(cluster,
                         levels = c(
-                          paste("Hope Labour (N =",sum(df_cut$cluster == 1), ")",sep = ""),
+                          paste("Hope Labor (N =",sum(df_cut$cluster == 1), ")",sep = ""),
                           paste("Adapted Survivors (N =",sum(df_cut$cluster == 2), ")",sep = ""),
                           paste("Top Earners (N =",sum(df_cut$cluster == 3), ")",sep = "")
                         ),
@@ -553,6 +562,7 @@ df_cut %>%
       x = subscriber_count,
       # y = active_months,
       y = audience,
+      # y = last_video,
       col = inc_sources,
       size = mean_z_duration
       # col = productivity
@@ -591,6 +601,64 @@ ggsave(filename = "graphics/cluster_analysis.png",
        width = 12,
        height = 6,
        dpi = 300)
+```
+
+
+```{r cluster analysis hope labour}
+df_cut_hl <- df_cut %>%
+  filter(cluster %in% c(1)) 
+
+df_cluster_hl <- df_cut_hl %>%
+  # filter(last_video < (365*1)) %>%
+  transmute(
+    subscriber_count_std = scale(subscriber_count)[,1],
+    inc_sources_std = scale(inc_sources)[,1],
+    inc_monthly_std = scale(inc_monthly)[,1],
+    mail,
+    active_months_std = scale(active_months)[,1],
+    # channel_age_std = scale(channel_age)[,1], #
+    mean_z_dur_std = scale(mean_z_duration)[,1],
+    productivity_std = scale(productivity)[,1],
+    last_video_std = scale(last_video)[,1],
+    audience_std = scale(audience)[,1],
+    sentiment_std = scale(mean_sentiment)[,1],
+    # hate_std = scale(hate_only_mean)[,1],
+    # n_topic_std = scale(n_topic)[,1], #
+    channel_topic,
+  ) %>%
+  na.omit()
+
+Factoshiny(df_cluster_hl)
+
+res_pca<-PCA(df_cluster_hl,ncp=Inf, scale.unit=FALSE,quali.sup=c(4,11),graph=FALSE)
+res_hcpc<-HCPC(res_pca,nb.clust=3,consol=FALSE,graph=FALSE)
+
+# res_hcpc$call
+
+df_cut_hl$cluster <- res_hcpc[["data.clust"]]$clust
+
+table(df_cut_hl$cluster)
+table(df_cut_hl$cluster, df_cut_hl$is_monetized)
+
+df_cut_hl %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_inc_sources = mean(inc_sources),
+    # median_inc_sources = median(inc_sources),
+    mean_inc = mean(inc_monthly),
+    max_inc = max(inc_monthly),
+    mean_subs = mean(subscriber_count),
+    mean_activity = mean(active_months),
+    median_activity = median(active_months),
+    mean_last_video = mean(last_video),
+    # median_last_video = median(last_video)
+  ) %>%
+  print()
+
+df_cut_hl %>%
+  filter(cluster == 1) %>%
+  filter(is_monetized == "yes") %>%
+  summarise(mean_inc = mean(inc_monthly))
 ```
 
 
